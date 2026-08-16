@@ -27,6 +27,7 @@ members = [
     "ageneval-task-agent-smolagents",
     "ageneval-task-claude-sdk-agent",
     "ageneval-task-core",
+    "ageneval-task-deepsearchqa",
     "ageneval-task-gdpval",
     "ageneval-task-gsm8k",
     "ageneval-task-humaneval",
@@ -697,6 +698,21 @@ requires-dist = [
 provides-extras = ["a2e"]
 
 [[package]]
+name = "ageneval-task-deepsearchqa"
+version = "0.1.0"
+source = { editable = "datasets/deepsearchqa" }
+dependencies = [
+    { name = "ageneval-task-core" },
+    { name = "datasets" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ageneval-task-core", editable = "packages/ageneval-task-core" },
+    { name = "datasets", specifier = ">=2.14.0" },
+]
+
+[[package]]
 name = "ageneval-task-gdpval"
 version = "0.1.0"
 source = { editable = "datasets/gdpval" }
@@ -912,12 +928,14 @@ version = "0.1.0"
 source = { editable = "datasets/tau2" }
 dependencies = [
     { name = "ageneval-task-core" },
+    { name = "ageneval-task-tau-bench" },
     { name = "datasets" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "ageneval-task-core", editable = "packages/ageneval-task-core" },
+    { name = "ageneval-task-tau-bench", editable = "datasets/tau_bench" },
     { name = "datasets", specifier = ">=2.14.0" },
 ]
 
@@ -927,10 +945,14 @@ version = "0.1.0"
 source = { editable = "datasets/tau3" }
 dependencies = [
     { name = "ageneval-task-core" },
+    { name = "ageneval-task-tau-bench" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "ageneval-task-core", editable = "packages/ageneval-task-core" }]
+requires-dist = [
+    { name = "ageneval-task-core", editable = "packages/ageneval-task-core" },
+    { name = "ageneval-task-tau-bench", editable = "datasets/tau_bench" },
+]
 
 [[package]]
 name = "ageneval-task-terminal-bench-2"
