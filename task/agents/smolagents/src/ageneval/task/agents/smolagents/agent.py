@@ -24,7 +24,7 @@ from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, 
 from ageneval.task.core.budget import max_steps as _default_steps
 from ageneval.task.core.budget import max_tokens as _max_tokens
 
-from ageneval.task.agents.smolagents.prompts import build_additional_instructions
+from ageneval.task.agents.smolagents.prompts import build_agent_instructions
 
 logger = logging.getLogger(__name__)
 
@@ -214,13 +214,19 @@ class SmolAgentsAgent(AgentRunner):
                 api_key=api_key,
                 max_tokens=_max_tokens(),
             )
+            # The binding's policy text must reach the model, so it goes in as
+            # smolagents' `instructions` (spliced into the rendered system
+            # prompt). `run(additional_args=...)` is a variables dict, not an
+            # instruction channel — passing it there silently dropped the
+            # prompt and left every harness but this one task-aware.
+            instructions = build_agent_instructions(self.binding.render_system_prompt())
             agent = ToolCallingAgent(
                 tools=tools,
                 model=model,
                 max_steps=self.max_steps,
+                instructions=instructions or None,
             )
-            additional = build_additional_instructions(self.binding.render_system_prompt())
-            result = agent.run(task.instruction, additional_args=None)
+            result = agent.run(task.instruction)
         except Exception as exc:  # noqa: BLE001
             msg = str(exc) or type(exc).__name__
             lower = msg.lower()
@@ -244,7 +250,7 @@ class SmolAgentsAgent(AgentRunner):
         turns = _count_steps(agent)
         elapsed = time.perf_counter() - start
         status = "ok" if final_answer else ("max_turns" if turns >= self.max_steps else "error")
-        # Hook the additional instructions into raw for downstream inspection.
+        # Record the instructions actually handed to the agent, for auditing.
         return TaskTrace(
             task_id=task.task_id,
             agent_name=self.name,
@@ -253,7 +259,7 @@ class SmolAgentsAgent(AgentRunner):
             tool_calls=tuple(recorder),
             final_answer=final_answer,
             elapsed_seconds=elapsed,
-            raw={"additional_instructions": additional} if additional else {},
+            raw={"instructions": instructions} if instructions else {},
         )
 
 
