@@ -20,6 +20,7 @@ datasets without a single change: the agent only ever calls
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field, replace
@@ -75,7 +76,28 @@ class SandboxScoringRunner(AgentRunner):
                     task,
                     initial_state={**dict(task.initial_state), "__sandbox__": sb},
                 )
-                trace = await self.inner.run(inner_task)
+                agent_timeout = task.metadata.get("agent_timeout_sec")
+                try:
+                    if agent_timeout is None:
+                        trace = await self.inner.run(inner_task)
+                    else:
+                        timeout = float(agent_timeout)
+                        if timeout <= 0:
+                            raise ValueError("agent_timeout_sec must be positive")
+                        trace = await asyncio.wait_for(self.inner.run(inner_task), timeout=timeout)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "agent timed out on %s after %ss", task.task_id, agent_timeout
+                    )
+                    trace = TaskTrace(
+                        task_id=task.task_id,
+                        agent_name=getattr(self.inner, "name", "agent"),
+                        status="error",
+                        turns=0,
+                        elapsed_seconds=time.perf_counter() - start,
+                        error=f"agent timed out after {agent_timeout}s",
+                        raw={"agent_timed_out": True},
+                    )
                 model_patch = sb.exec(list(self.patch_cmd)).stdout
                 try:
                     report = dict(self.score_fn(task, sb, model_patch))

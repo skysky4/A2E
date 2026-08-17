@@ -108,6 +108,8 @@ def _build_task(task_dir: Path) -> TaskInput | None:
     name = task_dir.name
     toml = _load_toml(task_dir / "task.toml")
     env = toml.get("environment", {}) or {}
+    agent = toml.get("agent", {}) or {}
+    verifier = toml.get("verifier", {}) or {}
     md = toml.get("metadata", {}) or {}
     image = env.get("docker_image")
     if not image:
@@ -115,7 +117,10 @@ def _build_task(task_dir: Path) -> TaskInput | None:
         return None
     instruction = (task_dir / "instruction.md").read_text(encoding="utf-8", errors="ignore").strip()
     workdir = _parse_workdir(task_dir)
-    verifier_timeout = float((toml.get("verifier", {}) or {}).get("timeout_sec", 900.0))
+    agent_timeout = float(agent.get("timeout_sec", 900.0))
+    verifier_timeout = float(verifier.get("timeout_sec", 900.0))
+    environment_env = {str(k): str(v) for k, v in (env.get("env", {}) or {}).items()}
+    verifier_env = {str(k): str(v) for k, v in (verifier.get("env", {}) or {}).items()}
     return TaskInput(
         task_id=name,
         instruction=instruction,
@@ -135,7 +140,9 @@ def _build_task(task_dir: Path) -> TaskInput | None:
             "environment_storage_mb": env.get("storage_mb"),
             "environment_gpus": env.get("gpus"),
             "environment_allow_internet": env.get("allow_internet"),
+            "agent_timeout_sec": agent_timeout,
             "verifier_timeout_sec": verifier_timeout,
+            "verifier_env": verifier_env,
         },
         sandbox={
             "type": "docker",
@@ -143,6 +150,11 @@ def _build_task(task_dir: Path) -> TaskInput | None:
                 "image": str(image),
                 "cwd": workdir,
                 "pull": True,
+                "cpus": env.get("cpus"),
+                "memory_mb": env.get("memory_mb"),
+                "gpus": env.get("gpus"),
+                "allow_internet": env.get("allow_internet", True),
+                "env": environment_env,
                 # Official verifiers run uvx with the same pinned dependencies.
                 # Named volumes cache only uv downloads across fresh task
                 # containers. Task files, held-out tests, and rewards stay

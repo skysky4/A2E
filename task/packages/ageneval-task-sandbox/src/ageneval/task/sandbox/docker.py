@@ -48,6 +48,11 @@ class DockerSandboxEnvironment(SandboxEnvironment):
         entrypoint: str | None = None,
         keepalive: Sequence[str] = ("sleep", "infinity"),
         volumes: Sequence[str] = (),
+        cpus: float | int | None = None,
+        memory_mb: int | None = None,
+        gpus: int | None = None,
+        allow_internet: bool = True,
+        env: Mapping[str, str] | None = None,
         **_ignored: object,
     ) -> None:
         if not image:
@@ -63,6 +68,11 @@ class DockerSandboxEnvironment(SandboxEnvironment):
         self.entrypoint = entrypoint
         self.keepalive = list(keepalive)
         self.volumes = [str(volume) for volume in volumes]
+        self.cpus = cpus
+        self.memory_mb = memory_mb
+        self.gpus = gpus
+        self.allow_internet = allow_internet
+        self.env = {str(key): str(value) for key, value in (env or {}).items()}
         self._cid: str | None = None
 
     # ── lifecycle ──────────────────────────────────────────────────────────
@@ -84,6 +94,16 @@ class DockerSandboxEnvironment(SandboxEnvironment):
             run_cmd += ["--user", self.user]
         if self.entrypoint:
             run_cmd += ["--entrypoint", self.entrypoint]
+        if self.cpus is not None:
+            run_cmd += ["--cpus", str(self.cpus)]
+        if self.memory_mb is not None:
+            run_cmd += ["--memory", f"{int(self.memory_mb)}m"]
+        if self.gpus is not None and int(self.gpus) > 0:
+            run_cmd += ["--gpus", str(int(self.gpus))]
+        if not self.allow_internet:
+            run_cmd += ["--network", "none"]
+        for key, value in self.env.items():
+            run_cmd += ["--env", f"{key}={value}"]
         for volume in self.volumes:
             run_cmd += ["--volume", volume]
         run_cmd += [self.image, *self.keepalive]

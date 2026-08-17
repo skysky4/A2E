@@ -24,6 +24,20 @@ Docker image:
 The 89 task definitions are stored locally. Docker images are pulled only when a
 selected task is run.
 
+The adapter enforces the per-task `task.toml` runtime settings: `[agent]`
+`timeout_sec`, `[verifier]` `timeout_sec`, Docker CPU/memory/GPU and internet
+limits, `[environment.env]` for the whole container, and `[verifier.env]` for
+the held-out verifier process only. `storage_mb` remains recorded in metadata:
+Docker root-filesystem quotas are storage-driver-specific and cannot be applied
+portably without daemon configuration.
+
+For the vendored 89-task release, `mcp_servers`, `environment.env`,
+`verifier.env`, and `solution.env` are all empty; all tasks request zero GPUs
+and allow internet access. Published Docker images are used directly, so
+`build_timeout_sec` is not exercised. Agent implementations receive the
+per-task `agent.timeout_sec`; A2E's global agent deadline is only a fallback for
+datasets that do not define a task timeout.
+
 ## Run
 
 ```bash

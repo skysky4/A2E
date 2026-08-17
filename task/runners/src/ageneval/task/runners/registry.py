@@ -363,7 +363,10 @@ DATASETS["terminal-bench-2.1"] = {
     "load": _load_tb21, "bind": _bind_tb21, "kind": "sandbox",
     "score": _score_tb21, "setup": _setup_tb21,
     "default_evaluators": ["tb_resolved"],
-    "agent_overrides": {"max_turns": 40, "max_steps": 40},
+    # Terminal-Bench is governed by each task.toml's [agent].timeout_sec.
+    # Keep the framework-required turn/step cap effectively non-binding so it
+    # cannot terminate a task before that wall-clock budget expires.
+    "agent_overrides": {"max_turns": 10_000, "max_steps": 10_000},
 }
 
 

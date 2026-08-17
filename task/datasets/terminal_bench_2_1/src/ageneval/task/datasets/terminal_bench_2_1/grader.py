@@ -94,6 +94,10 @@ def score_terminal_bench_2_1(task: TaskInput, sandbox, model_patch: str) -> dict
 
     workdir = str(task.metadata.get("tb_workdir") or "/app")
     timeout = int(float(task.metadata.get("verifier_timeout_sec") or 900.0))
+    verifier_env = {
+        str(key): str(value)
+        for key, value in (task.metadata.get("verifier_env") or {}).items()
+    }
 
     try:
         n_files = _copy_tests_into_container(tests_dir, sandbox)
@@ -101,7 +105,7 @@ def score_terminal_bench_2_1(task: TaskInput, sandbox, model_patch: str) -> dict
         res = sandbox.exec(
             ["bash", "/tests/test.sh"],
             cwd=workdir,
-            env=_container_proxy_env() or None,
+            env={**_container_proxy_env(), **verifier_env} or None,
             timeout=timeout,
         )
     except Exception as exc:

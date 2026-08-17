@@ -104,6 +104,18 @@ class AgnoAgent(AgentRunner):
     async def run(self, task: TaskInput) -> TaskTrace:
         start = time.perf_counter()
         recorder: list[ToolCall] = []
+        task_timeout = task.metadata.get("agent_timeout_sec")
+        # Benchmarks such as Terminal-Bench define the authoritative per-task
+        # wall-clock budget. Keep the configured A2E deadline as the fallback
+        # for datasets that do not provide one. Leave a small margin so Agno's
+        # partial trace is returned before SandboxScoringRunner's outer timeout
+        # cancels this coroutine at the official boundary.
+        run_deadline = self.run_deadline
+        if task_timeout is not None:
+            configured_timeout = float(task_timeout)
+            if configured_timeout <= 0:
+                raise ValueError("agent_timeout_sec must be positive")
+            run_deadline = max(0.001, configured_timeout - 0.5)
         try:
             from agno.agent import Agent
             from agno.models.openai.like import OpenAILike
@@ -153,7 +165,7 @@ class AgnoAgent(AgentRunner):
             try:
                 result = await asyncio.wait_for(
                     asyncio.to_thread(agent.run, task.instruction),
-                    timeout=self.run_deadline,
+                    timeout=run_deadline,
                 )
             except asyncio.TimeoutError:
                 partial = tuple(recorder)
@@ -166,7 +178,7 @@ class AgnoAgent(AgentRunner):
                     final_answer=None,
                     elapsed_seconds=time.perf_counter() - start,
                     error=(
-                        f"agent exceeded {self.run_deadline:.0f}s deadline "
+                        f"agent exceeded {float(task_timeout or self.run_deadline):.0f}s deadline "
                         f"after {len(partial)} tool call(s)"
                     ),
                 )
