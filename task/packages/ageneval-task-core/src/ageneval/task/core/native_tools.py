@@ -210,10 +210,16 @@ def invoke_binding_tool(
     )
 
 
-def _annotation_for(spec: Mapping[str, Any]) -> type:
+def _annotation_for(spec: Mapping[str, Any]) -> Any:
     raw = spec.get("type", "string") if isinstance(spec, Mapping) else "string"
     if isinstance(raw, list):
         raw = raw[0] if raw else "string"
+    if raw == "array":
+        items = spec.get("items") if isinstance(spec, Mapping) else None
+        item_spec = items if isinstance(items, Mapping) else {"type": "string"}
+        return list[_annotation_for(item_spec)]
+    if raw == "object":
+        return dict[str, Any]
     return _JSON_TO_PY.get(str(raw), str)
 
 
