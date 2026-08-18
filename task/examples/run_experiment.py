@@ -202,6 +202,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--task-id",
+        action="append",
+        default=[],
+        help=(
+            "exact task ID to select; repeat for multiple tasks "
+            "(currently supported by terminal-bench-2.1)"
+        ),
+    )
+    parser.add_argument(
         "--concurrency",
         type=int,
         default=3,
@@ -272,6 +281,10 @@ def main() -> int:
         if args.dataset != "terminal-bench-2.1":
             parser.error("--exclude-category is currently supported only by terminal-bench-2.1")
         load_kwargs["exclude_categories"] = args.exclude_category
+    if args.task_id:
+        if args.dataset != "terminal-bench-2.1":
+            parser.error("--task-id is currently supported only by terminal-bench-2.1")
+        load_kwargs["task_ids"] = args.task_id
     dataset = ds_entry["load"](**load_kwargs)
     dataset, selection = sample_dataset(
         dataset,
