@@ -100,7 +100,15 @@ class SandboxScoringRunner(AgentRunner):
                     )
                 model_patch = sb.exec(list(self.patch_cmd)).stdout
                 try:
-                    report = dict(self.score_fn(task, sb, model_patch))
+                    # Verifiers execute synchronous sandbox commands and may run
+                    # for many minutes. Running one directly on the asyncio event
+                    # loop freezes every other task: agent deadlines cannot fire
+                    # and completed slots cannot schedule their next sample.
+                    # Keep the sandbox session alive here, but move the blocking
+                    # scorer to the default worker pool.
+                    report = dict(
+                        await asyncio.to_thread(self.score_fn, task, sb, model_patch)
+                    )
                 except Exception as exc:  # noqa: BLE001 — scoring must not crash the run
                     logger.exception("scorer failed on %s", task.task_id)
                     report = {"resolved": False, "score_error": str(exc)[:500]}

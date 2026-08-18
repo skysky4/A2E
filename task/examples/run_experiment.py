@@ -74,7 +74,7 @@ def _make_task_fn(agent, ds_entry: dict | None = None):
             setup_fn=ds_entry.get("setup"),
         )
 
-    def task_fn(input: dict, metadata: dict) -> dict:
+    async def task_fn(input: dict, metadata: dict) -> dict:
         task_input = TaskInput(
             task_id=metadata.get("task_id", "?"),
             instruction=input.get("instruction", ""),
@@ -82,7 +82,7 @@ def _make_task_fn(agent, ds_entry: dict | None = None):
             metadata=metadata if is_sandbox else {},
             sandbox=metadata.get("sandbox") if is_sandbox else None,
         )
-        trace = asyncio.run(runner.run(task_input))
+        trace = await runner.run(task_input)
         out = {
             "final_answer": trace.final_answer or "",
             "tool_calls": [tc.name for tc in trace.tool_calls],
@@ -150,6 +150,16 @@ def _build_experiment_metadata(*, agent_name: str, agent: Any, sdk: str) -> dict
     return build_experiment_metadata(agent_name=agent_name, agent=agent, sdk=sdk)
 
 
+def _sandbox_outer_timeout(tasks: list[Any], buffer_seconds: int = 300) -> int:
+    """Cover one task's agent + verifier budgets without premature replay."""
+    budgets = [
+        float(task.metadata.get("agent_timeout_sec") or 1800)
+        + float(task.metadata.get("verifier_timeout_sec") or 1800)
+        for task in tasks
+    ]
+    return int(max(budgets, default=3600) + buffer_seconds)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true", help="list available datasets/agents/evaluators and exit")
@@ -185,6 +195,22 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=3,
+        help="maximum number of examples executed concurrently (default: 3)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help=(
+            "outer per-example timeout in seconds; defaults to the largest "
+            "task.toml agent+verifier budget plus 300 seconds for sandbox "
+            "datasets, and 60 seconds otherwise"
+        ),
+    )
+    parser.add_argument(
         "--run-id",
         default=None,
         help="optional run id; omitted generates a unique timestamped id",
@@ -212,6 +238,10 @@ def main() -> int:
         parser.error(f"unknown agent: {args.agent}. Available: {sorted(AGENTS)}")
     if args.n <= 0:
         parser.error("--n must be a positive integer")
+    if args.concurrency <= 0:
+        parser.error("--concurrency must be a positive integer")
+    if args.timeout is not None and args.timeout <= 0:
+        parser.error("--timeout must be a positive integer")
 
     # 1. Load the full candidate split, then select this run's exact sample.
     # Passing n=None avoids every loader's legacy first-N truncation. Explicit
@@ -329,7 +359,7 @@ def main() -> int:
         evaluators = None  # a2e-client skips evaluate_experiment when evaluators is None
 
     # 6. Run experiment
-    from a2e.client.experiments import run_experiment  # type: ignore
+    from a2e.client.experiments import async_run_experiment  # type: ignore
 
     # Sandbox datasets (SWE-bench) run real docker containers. The per-task
     # lifecycle removes its own container, but a hard-killed run can leak one.
@@ -348,6 +378,16 @@ def main() -> int:
         f"{actual_model} x [{eval_label}] over {len(examples)} examples"
     )
     task_fn = _make_task_fn(agent, ds_entry)
+    is_sandbox = ds_entry.get("kind") == "sandbox"
+    outer_timeout = (
+        args.timeout
+        if args.timeout is not None
+        else (_sandbox_outer_timeout(dataset.tasks) if is_sandbox else 60)
+    )
+    print(
+        f"  execution: concurrency={args.concurrency}; "
+        f"outer_timeout={outer_timeout}s; retries={0 if is_sandbox else 3}"
+    )
     run_kwargs: dict[str, Any] = dict(
         dataset=a2e_dataset,
         task=task_fn,
@@ -372,14 +412,17 @@ def main() -> int:
             "selected_n": selection.selected_n,
             "sample_task_ids": list(selection.task_ids),
         },
+        # SandboxScoringRunner applies the task.toml agent timeout and the
+        # grader applies verifier_timeout_sec. The outer budget covers both.
+        timeout=outer_timeout,
+        # Replaying a stateful sandbox task can duplicate containers and API
+        # calls. Inner layers already convert task failures into TaskTrace.
+        retries=0 if is_sandbox else 3,
     )
-    # NOTE: the vendored a2e-client's sync run_experiment exposes no
-    # `concurrency` parameter (only the async variant does). Sandbox examples
-    # are still safe to run as-is: each task spins its own uniquely-named docker
-    # container, so parallel examples never collide. Keep --n small for heavy
-    # SWE-bench runs.
     try:
-        ran = run_experiment(**run_kwargs)
+        ran = asyncio.run(
+            async_run_experiment(**run_kwargs, concurrency=args.concurrency)
+        )
     finally:
         if sweep is not None:
             _post = sweep()
