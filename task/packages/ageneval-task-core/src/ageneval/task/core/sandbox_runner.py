@@ -23,8 +23,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any
 
 from ageneval.task.core.agent import AgentRunner
 from ageneval.task.core.dataset import TaskInput
@@ -35,7 +36,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# (task, sandbox) -> None  ；  (task, sandbox, model_patch) -> report dict
+# (task, sandbox) -> None; (task, sandbox, model_patch) -> report dict
 SetupFn = Callable[[TaskInput, "SandboxEnvironment"], None]
 ScoreFn = Callable[[TaskInput, "SandboxEnvironment", str], Mapping[str, Any]]
 
@@ -101,7 +102,7 @@ class SandboxScoringRunner(AgentRunner):
                 model_patch = sb.exec(list(self.patch_cmd)).stdout
                 try:
                     # Verifiers execute synchronous sandbox commands and may run
-                    # for many minutes. Running one directly on the asyncio event
+                    # for many minutes.  Running one directly on the asyncio event
                     # loop freezes every other task: agent deadlines cannot fire
                     # and completed slots cannot schedule their next sample.
                     # Keep the sandbox session alive here, but move the blocking
@@ -109,10 +110,10 @@ class SandboxScoringRunner(AgentRunner):
                     report = dict(
                         await asyncio.to_thread(self.score_fn, task, sb, model_patch)
                     )
-                except Exception as exc:  # noqa: BLE001 — scoring must not crash the run
+                except Exception as exc:  # scoring must not crash the run
                     logger.exception("scorer failed on %s", task.task_id)
                     report = {"resolved": False, "score_error": str(exc)[:500]}
-        except Exception as exc:  # noqa: BLE001 — sandbox provisioning failure
+        except Exception as exc:  # sandbox provisioning failure
             logger.exception("sandbox failed on %s", task.task_id)
             return TaskTrace(
                 task_id=task.task_id,
