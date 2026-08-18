@@ -17,9 +17,14 @@ Docker image:
 1. `SandboxScoringRunner` pulls and starts the image.
 2. The agent works through the sandbox-backed `bash` and
    `str_replace_editor` tools.
-3. `score_terminal_bench_2_1` copies the held-out `tests/` directory into the
-   live container and runs the official verifier.
-4. The verifier reward is normalized to the `resolved` result.
+3. After the agent exits, `score_terminal_bench_2_1` injects trusted, pinned
+   `uv`/`uvx` binaries into the live container. The agent never sees them.
+4. The scorer copies the held-out `tests/` directory, replaces its online uv
+   installer with a local availability check, and runs the official tests from
+   pre-warmed dependency caches.
+5. A run is resolved only when `reward.txt` and a non-empty CTRF report both
+   confirm that every test passed. Missing CTRF is a `verifier_error`, not a
+   graded task failure.
 
 The 89 task definitions are stored locally. Docker images are pulled only when a
 selected task is run.
@@ -39,6 +44,23 @@ per-task `agent.timeout_sec`; A2E's global agent deadline is only a fallback for
 datasets that do not define a task timeout.
 
 ## Run
+
+Prepare the pinned uv 0.9.5 binaries and every verifier dependency set once:
+
+```bash
+python scripts/prewarm_tb21_verifier_cache.py
+```
+
+If the existing Docker cache volumes are already warm, only extract the trusted
+binaries:
+
+```bash
+python scripts/prewarm_tb21_verifier_cache.py --binaries-only
+```
+
+The binaries are stored under the ignored host cache
+`.a2e-cache/tb21-verifier/uv-0.9.5/`; they are copied into each task container
+only after its agent run finishes.
 
 ```bash
 cd /root/ageneval/AEP/task
@@ -62,3 +84,4 @@ then falls back to task-name order.
 | `A2E_TB21_TASK` | Backward-compatible alias for `AEP_TB21_TASK` |
 | `A2E_TB2_SCORE_PROXY` | Proxy URL used by in-container verifier setup |
 | `A2E_TB2_DOCKER_GW` | Docker bridge gateway used for proxy rewriting |
+| `A2E_TB21_UV_BIN_DIR` | Override the trusted host directory containing uv/uvx 0.9.5 |

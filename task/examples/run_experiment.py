@@ -111,7 +111,14 @@ def _make_task_fn(agent, ds_entry: dict | None = None):
                 "tb_tests_failed",
                 "tb_verifier_files",
                 "tb_verifier_exit",
+                "tb_verifier_stdout_tail",
                 "tb_verifier_stderr_tail",
+                "tb_verifier_phase",
+                "tb_uv_injected",
+                "tb_uv_version",
+                "tb_bootstrap_rewritten",
+                "tb_reward_read_error",
+                "tb_ctrf_error",
                 "score_error",
             ):
                 out[key] = raw.get(key)

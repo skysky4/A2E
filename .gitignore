@@ -50,6 +50,7 @@ ui/dist/
 # A2E runtime data (SQLite, traces, etc.)
 .a2e-data/
 .a2e-data*
+.a2e-*
 *.db
 
 # Claude Code / project-unrelated tooling state

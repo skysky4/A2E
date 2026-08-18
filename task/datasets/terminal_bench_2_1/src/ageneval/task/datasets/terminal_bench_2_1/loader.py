@@ -37,6 +37,7 @@ _SOURCE_COMMIT = "5c8eadf1f393183288fa08b8f73ca9a469cc5e00"
 _VERIFIER_CACHE_VOLUMES = (
     "aep-tb21-uv-cache-v1:/root/.cache/uv",
     "aep-tb21-uv-data-v1:/root/.local/share/uv",
+    "aep-tb21-pip-cache-v1:/root/.cache/pip",
 )
 
 
@@ -156,7 +157,7 @@ def _build_task(task_dir: Path) -> TaskInput | None:
                 "allow_internet": env.get("allow_internet", True),
                 "env": environment_env,
                 # Official verifiers run uvx with the same pinned dependencies.
-                # Named volumes cache only uv downloads across fresh task
+                # Named volumes cache uv and pip downloads across fresh task
                 # containers. Task files, held-out tests, and rewards stay
                 # isolated in each container.
                 "volumes": list(_VERIFIER_CACHE_VOLUMES),
