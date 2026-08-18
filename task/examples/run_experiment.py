@@ -176,6 +176,15 @@ def main() -> int:
         help="seed for reproducible random sampling; omitted generates and records one",
     )
     parser.add_argument(
+        "--exclude-category",
+        action="append",
+        default=[],
+        help=(
+            "task category to exclude before sampling; repeat for multiple "
+            "categories (currently supported by terminal-bench-2.1)"
+        ),
+    )
+    parser.add_argument(
         "--run-id",
         default=None,
         help="optional run id; omitted generates a unique timestamped id",
@@ -222,6 +231,10 @@ def main() -> int:
     # pick an uncached image and docker pull through a dead proxy.
     if ds_entry.get("kind") == "sandbox":
         load_kwargs["n"] = args.n
+    if args.exclude_category:
+        if args.dataset != "terminal-bench-2.1":
+            parser.error("--exclude-category is currently supported only by terminal-bench-2.1")
+        load_kwargs["exclude_categories"] = args.exclude_category
     dataset = ds_entry["load"](**load_kwargs)
     dataset, selection = sample_dataset(
         dataset,

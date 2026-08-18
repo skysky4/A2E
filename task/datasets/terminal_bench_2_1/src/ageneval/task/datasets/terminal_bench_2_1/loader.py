@@ -176,6 +176,7 @@ def _safe_build(task_dir: Path) -> TaskInput | None:
 def load_terminal_bench_2_1_tasks(
     n: int | None = 1,
     task_ids: Sequence[str] | None = None,
+    exclude_categories: Sequence[str] | None = None,
 ) -> TerminalBench21Dataset:
     """Load vendored Terminal-Bench 2.1 tasks into ``TaskInput`` records.
 
@@ -185,6 +186,8 @@ def load_terminal_bench_2_1_tasks(
             locally are preferred (so a demo/test "just works" without a fresh
             multi-GB pull), falling back to alphabetical order.
         task_ids: If given, load exactly these task names (ignoring ``n``).
+        exclude_categories: Case-insensitive task categories to omit before
+            local-image preference and ``n`` truncation.
 
     Returns:
         A ``TerminalBench21Dataset`` ready to feed ``SandboxScoringRunner``.
@@ -197,6 +200,12 @@ def load_terminal_bench_2_1_tasks(
     if not available:
         raise FileNotFoundError(f"no vendored {_DATASET_NAME} tasks found under {base}")
 
+    excluded = {
+        str(category).strip().lower()
+        for category in (exclude_categories or ())
+        if str(category).strip()
+    }
+
     if task_ids:
         missing = sorted(set(task_ids) - set(available))
         if missing:
@@ -205,6 +214,13 @@ def load_terminal_bench_2_1_tasks(
     else:
         built = [(t, _safe_build(base / t)) for t in available]
         built = [(t, ti) for t, ti in built if ti is not None]
+        if excluded:
+            built = [
+                (t, ti)
+                for t, ti in built
+                if str(ti.metadata.get("category", "")).strip().lower() not in excluded
+            ]
+            logger.info("%s: excluded categories: %s", _DATASET_NAME, sorted(excluded))
         # Prefer locally-cached images so a no-pin run avoids a fresh multi-GB pull.
         if n is not None:
             local = _local_images()

@@ -231,7 +231,11 @@ def _load_tb21(**kw: Any):
         if _pin:
             kw["task_ids"] = [_pin]
     return load_terminal_bench_2_1_tasks(
-        **{k: v for k, v in kw.items() if k in ("n", "task_ids")}
+        **{
+            k: v
+            for k, v in kw.items()
+            if k in ("n", "task_ids", "exclude_categories")
+        }
     )
 
 
