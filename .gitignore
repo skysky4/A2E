@@ -63,6 +63,7 @@ scripts/check_before_push.sh
 # Plan / notes scratch
 plan/
 notes/
+/tmp/
 
 # AI Tool
 AGENTS.md

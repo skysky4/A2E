@@ -91,13 +91,6 @@ class CrewAIAgent(AgentRunner):
                 max_tokens=_max_tokens(),
             )
             tools = _build_tools(self.binding, task, recorder)
-            if tools:
-                # CrewAI 1.6 get_llm_response never forwards tools to
-                # llm.call. The model then writes a ReAct Thought and
-                # format_answer treats the parse failure as AgentFinish
-                # (0 recorded tool calls). Bind native function-calling
-                # schemas + executors onto every completion.
-                _attach_native_tools(llm, tools, self.binding)
             system_prompt = self.binding.render_system_prompt()
             agent = Agent(
                 role="A2E benchmark agent",
@@ -160,49 +153,6 @@ def _extract_final(result: Any) -> str:
     if raw:
         return str(raw).strip()
     return str(result).strip()
-
-
-def _attach_native_tools(llm: Any, tools: list[Any], binding: AgentBinding) -> None:
-    """Inject OpenAI tool schemas into every ``llm.call``.
-
-    CrewAI's ReAct loop asks the model for ``Action:`` text but does not
-    put ``tools`` on the chat-completions request. Instruct models then
-    emit a Thought and stop; 1.6's ``format_answer`` swallows the parse
-    error as a final answer. Native function calling with
-    ``tool_choice=required`` forces at least one named-arg tool call.
-    """
-    from ageneval.task.core.native_tools import openai_tool_dicts
-
-    openai_tools = openai_tool_dicts(binding.tool_schemas)
-    available = {t.name: t._run for t in tools}
-    orig = llm.call
-    n_calls = {"n": 0}
-
-    def call(
-        messages: Any,
-        tools: Any = None,
-        callbacks: Any = None,
-        available_functions: Any = None,
-        from_task: Any = None,
-        from_agent: Any = None,
-        response_model: Any = None,
-    ) -> Any:
-        n_calls["n"] += 1
-        extra = dict(getattr(llm, "additional_params", None) or {})
-        # First turn must call a tool; later turns may emit the final answer.
-        extra["tool_choice"] = "required" if n_calls["n"] == 1 else "auto"
-        llm.additional_params = extra
-        return orig(
-            messages,
-            tools=tools or openai_tools,
-            callbacks=callbacks,
-            available_functions=available_functions or available,
-            from_task=from_task,
-            from_agent=from_agent,
-            response_model=response_model,
-        )
-
-    llm.call = call
 
 
 def _build_tools(

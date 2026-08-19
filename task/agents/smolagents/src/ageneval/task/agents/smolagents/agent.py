@@ -17,14 +17,14 @@ import json
 import logging
 import os
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any, ClassVar
 
+from ageneval.task.agents.smolagents.prompts import build_agent_instructions
 from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, ToolCall
 from ageneval.task.core.budget import max_steps as _default_steps
 from ageneval.task.core.budget import max_tokens as _max_tokens
-
-from ageneval.task.agents.smolagents.prompts import build_agent_instructions
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ _TYPE_MAP = {
 }
 
 
-def _coerce_inputs(parameters: Mapping[str, Any]) -> dict[str, dict[str, str]]:
+def _coerce_inputs(parameters: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """Translate an OpenAI/JSON-Schema parameters block into smolagents' format.
 
     smolagents requires every input to declare ``type`` (one of the supported
@@ -53,19 +53,38 @@ def _coerce_inputs(parameters: Mapping[str, Any]) -> dict[str, dict[str, str]]:
     objects/arrays are kept as-is and the LLM is asked to pass JSON.
     """
     props = parameters.get("properties", {}) if isinstance(parameters, Mapping) else {}
-    out: dict[str, dict[str, str]] = {}
+    raw_required = parameters.get("required", ()) if isinstance(parameters, Mapping) else ()
+    required = (
+        {str(key) for key in raw_required}
+        if isinstance(raw_required, Sequence) and not isinstance(raw_required, (str, bytes))
+        else set()
+    )
+    out: dict[str, dict[str, Any]] = {}
     for key, spec in (props or {}).items():
         if not isinstance(spec, Mapping):
-            out[key] = {"type": "string", "description": str(spec)[:200]}
+            input_spec: dict[str, Any] = {
+                "type": "string",
+                "description": str(spec)[:200],
+            }
+            if key not in required:
+                input_spec["nullable"] = True
+            out[key] = input_spec
             continue
         raw_type = spec.get("type", "string")
         if isinstance(raw_type, list):
             raw_type = raw_type[0] if raw_type else "string"
         py_type = _TYPE_MAP.get(str(raw_type), "string")
-        out[key] = {
+        input_spec = {
             "type": py_type,
             "description": str(spec.get("description") or key)[:500],
         }
+        # smolagents derives its model-facing ``required`` list from the
+        # inverse of ``nullable``. Preserve the source JSON Schema's required
+        # list or optional command-specific fields (for example old_str on a
+        # str_replace_editor ``view`` call) are incorrectly rejected.
+        if key not in required:
+            input_spec["nullable"] = True
+        out[key] = input_spec
     return out
 
 
@@ -98,7 +117,7 @@ def _make_smolagents_tool(
 
         name = ""  # set below
         description = ""
-        inputs: dict[str, dict[str, str]] = {}
+        inputs: ClassVar[dict[str, dict[str, Any]]] = {}
         output_type = "string"
 
         def forward(self, **kwargs: Any) -> str:
