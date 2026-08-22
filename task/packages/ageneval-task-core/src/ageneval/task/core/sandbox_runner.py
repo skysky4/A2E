@@ -28,6 +28,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from ageneval.task.core.agent import AgentRunner
+from ageneval.task.core.async_utils import run_sync_in_daemon_thread
 from ageneval.task.core.dataset import TaskInput
 from ageneval.task.core.result import TaskTrace
 
@@ -87,9 +88,7 @@ class SandboxScoringRunner(AgentRunner):
                             raise ValueError("agent_timeout_sec must be positive")
                         trace = await asyncio.wait_for(self.inner.run(inner_task), timeout=timeout)
                 except asyncio.TimeoutError:
-                    logger.warning(
-                        "agent timed out on %s after %ss", task.task_id, agent_timeout
-                    )
+                    logger.warning("agent timed out on %s after %ss", task.task_id, agent_timeout)
                     trace = TaskTrace(
                         task_id=task.task_id,
                         agent_name=getattr(self.inner, "name", "agent"),
@@ -106,9 +105,16 @@ class SandboxScoringRunner(AgentRunner):
                     # loop freezes every other task: agent deadlines cannot fire
                     # and completed slots cannot schedule their next sample.
                     # Keep the sandbox session alive here, but move the blocking
-                    # scorer to the default worker pool.
+                    # scorer to a daemon worker. A cancelled default-executor
+                    # worker would otherwise delay asyncio/interpreter shutdown.
                     report = dict(
-                        await asyncio.to_thread(self.score_fn, task, sb, model_patch)
+                        await run_sync_in_daemon_thread(
+                            self.score_fn,
+                            task,
+                            sb,
+                            model_patch,
+                            thread_name=f"a2e-scorer-{task.task_id}",
+                        )
                     )
                 except Exception as exc:  # scoring must not crash the run
                     logger.exception("scorer failed on %s", task.task_id)

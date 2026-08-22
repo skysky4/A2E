@@ -39,13 +39,17 @@ async def test_scorer_is_offloaded_from_event_loop(monkeypatch: pytest.MonkeyPat
 
     offloaded: list[object] = []
 
-    async def fake_to_thread(
+    async def fake_daemon_thread(
         function: Callable[..., Any], *args: object, **kwargs: object
     ) -> Any:
         offloaded.append(function)
+        kwargs.pop("thread_name", None)
         return function(*args, **kwargs)
 
-    monkeypatch.setattr("asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr(
+        "ageneval.task.core.sandbox_runner.run_sync_in_daemon_thread",
+        fake_daemon_thread,
+    )
 
     def score(_task: TaskInput, _sandbox: object, _patch: str) -> dict[str, bool]:
         return {"resolved": True}

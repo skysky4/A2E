@@ -109,11 +109,14 @@ def prepare_uv_binaries(image: str, target: Path, *, dry_run: bool) -> None:
             )
 
 
-def uvx_commands() -> list[tuple[str, list[str]]]:
+def uvx_commands(task_ids: set[str] | None = None) -> list[tuple[str, list[str]]]:
     """Return one harmless invocation for every distinct verifier dependency set."""
     found: dict[tuple[str, ...], str] = {}
     pattern = re.compile(r"(?ms)^uvx\s+\\\n(.*?)(?=\n\s*\n|\nif\s)")
     for test_sh in sorted(TASKS.glob("*/tests/test.sh")):
+        task_name = test_sh.parent.parent.name
+        if task_ids is not None and task_name not in task_ids:
+            continue
         text = test_sh.read_text(encoding="utf-8")
         match = pattern.search(text)
         if not match:
@@ -126,7 +129,7 @@ def uvx_commands() -> list[tuple[str, list[str]]]:
         except ValueError as exc:
             raise RuntimeError(f"cannot locate pytest executable in {test_sh}") from exc
         warm = tuple([*tokens[: pytest_at + 1], "--version"])
-        found.setdefault(warm, test_sh.parent.parent.name)
+        found.setdefault(warm, task_name)
 
     # mailman uses uv venv/uv pip instead of uvx, but the same package cache can
     # be populated with an equivalent ephemeral uvx environment.
@@ -134,14 +137,18 @@ def uvx_commands() -> list[tuple[str, list[str]]]:
         "uvx", "-p", "3.12", "-w", "pytest==8.4.1", "-w", "mailman==3.3.8",
         "-w", "pytest-json-ctrf==0.3.5", "pytest", "--version",
     )
-    found.setdefault(mailman, "mailman")
+    if task_ids is None or "mailman" in task_ids:
+        found.setdefault(mailman, "mailman")
     return sorted(((task, list(cmd)) for cmd, task in found.items()), key=lambda item: item[0])
 
 
-def pip_commands() -> list[tuple[str, str, list[str]]]:
+def pip_commands(task_ids: set[str] | None = None) -> list[tuple[str, str, list[str]]]:
     """Return task image and install arguments for direct-pip verifiers."""
     commands: list[tuple[str, str, list[str]]] = []
     for test_sh in sorted(TASKS.glob("*/tests/test.sh")):
+        task_name = test_sh.parent.parent.name
+        if task_ids is not None and task_name not in task_ids:
+            continue
         text = test_sh.read_text(encoding="utf-8")
         match = re.search(r"(?m)^pip install (.+)$", text)
         if not match:
@@ -164,15 +171,27 @@ def main() -> int:
         action="store_true",
         help="extract trusted uv/uvx without warming dependency caches",
     )
+    parser.add_argument(
+        "--task-id",
+        action="append",
+        default=[],
+        help="warm dependencies for this exact TB2.1 task; repeat as needed",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+
+    task_ids = set(args.task_id) or None
+    if task_ids is not None:
+        missing = sorted(task_id for task_id in task_ids if not (TASKS / task_id).is_dir())
+        if missing:
+            parser.error("unknown Terminal-Bench 2.1 task(s): " + ", ".join(missing))
 
     prepare_uv_binaries(args.image, args.bin_dir.resolve(), dry_run=args.dry_run)
     if args.binaries_only:
         return 0
 
-    commands = uvx_commands()
-    pip_installs = pip_commands()
+    commands = uvx_commands(task_ids)
+    pip_installs = pip_commands(task_ids)
     print(
         f"Found {len(commands)} distinct uv verifier dependency sets and "
         f"{len(pip_installs)} pip verifier tasks.",

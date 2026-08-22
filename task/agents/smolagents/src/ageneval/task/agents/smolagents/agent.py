@@ -12,7 +12,6 @@ inside this module.**
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -22,7 +21,14 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from ageneval.task.agents.smolagents.prompts import build_agent_instructions
-from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, ToolCall
+from ageneval.task.core import (
+    AgentBinding,
+    AgentRunner,
+    TaskInput,
+    TaskTrace,
+    ToolCall,
+    run_sync_in_daemon_thread,
+)
 from ageneval.task.core.budget import max_steps as _default_steps
 from ageneval.task.core.budget import max_tokens as _max_tokens
 
@@ -172,9 +178,14 @@ class SmolAgentsAgent(AgentRunner):
         self.name = f"smolagents-{self.binding.name}"
 
     async def run(self, task: TaskInput) -> TaskTrace:
-        # Blocking smolagents.run() executed in a thread so we keep the
-        # async contract of AgentRunner.
-        return await asyncio.to_thread(self._run_sync, task)
+        # smolagents has no native async runner. A daemon thread preserves the
+        # async AgentRunner contract without making asyncio.run() wait forever
+        # for an SDK call that outlives a task timeout.
+        return await run_sync_in_daemon_thread(
+            self._run_sync,
+            task,
+            thread_name=f"a2e-{self.name}-{task.task_id}",
+        )
 
     def _run_sync(self, task: TaskInput) -> TaskTrace:
         start = time.perf_counter()
@@ -191,8 +202,7 @@ class SmolAgentsAgent(AgentRunner):
                 tool_calls=(),
                 elapsed_seconds=time.perf_counter() - start,
                 error=(
-                    f"smolagents is not installed: {exc}. "
-                    "Run `uv sync` at the A2E workspace root."
+                    f"smolagents is not installed: {exc}. Run `uv sync` at the A2E workspace root."
                 )[:1000],
             )
 
@@ -246,7 +256,7 @@ class SmolAgentsAgent(AgentRunner):
                 instructions=instructions or None,
             )
             result = agent.run(task.instruction)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             msg = str(exc) or type(exc).__name__
             lower = msg.lower()
             hint = ""
@@ -313,7 +323,7 @@ def _stringify(result: Any) -> str | None:
         return result.strip() or None
     try:
         return json.dumps(result, default=str)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return str(result)
 
 
@@ -326,6 +336,6 @@ def _count_steps(agent: Any) -> int:
     if steps is None:
         steps = getattr(agent, "logs", None)
     try:
-        return int(len(steps)) if steps is not None else 0
+        return len(steps) if steps is not None else 0
     except TypeError:
         return 0

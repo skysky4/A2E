@@ -13,14 +13,19 @@ absent.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, ToolCall
+from ageneval.task.core import (
+    AgentBinding,
+    AgentRunner,
+    TaskInput,
+    TaskTrace,
+    ToolCall,
+    run_sync_in_daemon_thread,
+)
 
 # Unified model: default to .env's A2E_MODEL (a non-reasoning instruct model);
 # fall back to qwen-plus.
@@ -116,9 +121,13 @@ class CrewAIAgent(AgentRunner):
             )
             crew = Crew(agents=[agent], tasks=[crew_task], verbose=False)
 
-            # crewai's ``Crew.kickoff`` is synchronous; run it off the event
-            # loop so the surrounding asyncio runner is not blocked.
-            result = await asyncio.to_thread(crew.kickoff)
+            # CrewAI's kickoff_async() also delegates to asyncio.to_thread(),
+            # whose default-executor worker delays interpreter shutdown after
+            # cancellation. Keep the blocking SDK call in a daemon worker.
+            result = await run_sync_in_daemon_thread(
+                crew.kickoff,
+                thread_name=f"a2e-{self.name}-{task.task_id}",
+            )
 
             final = _extract_final(result)
             turns = len(recorder) or (1 if final else 0)
@@ -165,14 +174,14 @@ def _build_tools(
     ``args_schema`` is generated from the dataset JSON Schema so the model
     sees real parameter names instead of a single ``arguments_json`` blob.
     """
-    from crewai.tools import BaseTool
-
     from ageneval.task.core.native_tools import (
         invoke_binding_tool,
         openai_function,
         parameters_block,
         pydantic_args_model,
     )
+
+    from crewai.tools import BaseTool
 
     # Set name/description/args_schema via constructor kwargs, not class-body
     # defaults. Pydantic's model namespace treats `name`/`description` as the
