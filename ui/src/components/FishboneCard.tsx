@@ -14,6 +14,7 @@ interface FishboneNode {
   sub?: SubMetric[];
   tooltipMetric?: string | null;
   description?: string;
+  empty?: boolean;
 }
 
 function SubFishbone({ parentNode, subMetrics }: { parentNode: string; subMetrics: SubMetric[] }) {
@@ -60,7 +61,6 @@ export function FishboneCard({ records, overall }: { records: ExperimentRecord[]
     ["plan_goal_alignment", annotationAverage(records, "plan_goal_alignment")],
     ["plan_completeness", annotationAverage(records, "plan_completeness")],
     ["plan_constraint_adherence", annotationAverage(records, "plan_constraint_adherence")],
-    ["reasoning_coherence", annotationAverage(records, "reasoning_coherence")],
     ["plan_hallucination", annotationAverage(records, "plan_hallucination")],
   ];
   const toolSubMetrics: SubMetric[] = [
@@ -71,23 +71,19 @@ export function FishboneCard({ records, overall }: { records: ExperimentRecord[]
   ];
   const finalSubMetrics: SubMetric[] = [
     ["correctness", annotationAverage(records, "correctness")],
-    ["instruction_following", annotationAverage(records, "instruction_following")],
-    ["llm_judge", annotationAverage(records, "llm_judge")],
     ["task_succeeded", annotationAverage(records, "task_succeeded")],
-    ["execution_completion", annotationAverage(records, "execution_completion")],
-    ["error_absence", annotationAverage(records, "error_absence")],
   ];
 
   const finalResultDescription = [
     "- Meaning: Structural final result node on the fishbone spine.",
     "- Calculation: Shows the benchmark-level overall score, which is the average of the first available correctness-style metric.",
-    "- Expanded metrics: correctness, instruction_following, llm_judge, task_succeeded, execution_completion, and error_absence.",
+    "- Expanded metrics: correctness and task_succeeded.",
   ].join("\n");
 
   const nodes: FishboneNode[] = [
     { id: "plan", node: "Plan", metric: "plan_grade", score: annotationAverage(records, "plan_grade"), sub: planSubMetrics },
-    { id: "memory", node: "Memory", metric: "hallucination", score: annotationAverage(records, "hallucination") },
-    { id: "skill", node: "Skill", metric: "conciseness", score: annotationAverage(records, "conciseness") },
+    { id: "memory", node: "Memory", metric: "", score: null, tooltipMetric: null, empty: true },
+    { id: "skill", node: "Skill", metric: "", score: null, tooltipMetric: null, empty: true },
     { id: "tool", node: "Tool", metric: "tool_recall", score: annotationAverage(records, "tool_recall"), sub: toolSubMetrics },
     { id: "final", node: "Final_Result", metric: "final_result", score: overall, sub: finalSubMetrics, tooltipMetric: null, description: finalResultDescription },
   ];
@@ -152,13 +148,15 @@ export function FishboneCard({ records, overall }: { records: ExperimentRecord[]
             <div
               key={n.id}
               data-expand-id={expandable ? n.id : undefined}
-              className={`fish-item ${i % 2 ? "lower" : "upper"}${expandable ? " fish-item-expandable" : ""}${isOpen ? " open" : ""}`}
+              className={`fish-item ${i % 2 ? "lower" : "upper"}${n.empty ? " empty" : ""}${expandable ? " fish-item-expandable" : ""}${isOpen ? " open" : ""}`}
             >
-              <div className={`fish-branch ${description ? "has-metric-tooltip" : ""} ${rangeClass}`}>
-                <span>{n.metric}</span>
-                <strong>{formatScore(n.score)}</strong>
-                {description ? <MetricTooltip text={description} /> : null}
-              </div>
+              {n.empty ? null : (
+                <div className={`fish-branch ${description ? "has-metric-tooltip" : ""} ${rangeClass}`}>
+                  <span>{n.metric}</span>
+                  <strong>{formatScore(n.score)}</strong>
+                  {description ? <MetricTooltip text={description} /> : null}
+                </div>
+              )}
               <div
                 className="fish-node"
                 role={expandable ? "button" : undefined}

@@ -20,6 +20,7 @@ interface ApiSpan {
 function normalizeSpan(raw: ApiSpan): SpanNode {
   return {
     span_id: raw.context?.span_id ?? raw.span_id ?? raw.id ?? "",
+    trace_id: raw.context?.trace_id,
     parent_id: raw.parent_id ?? raw.parent_span_id ?? null,
     name: raw.name ?? "",
     span_kind: raw.span_kind,

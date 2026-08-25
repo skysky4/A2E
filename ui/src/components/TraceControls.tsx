@@ -44,16 +44,17 @@ function wheelItems(items: string[], idx: number) {
 interface RunOption {
   label: string;
   exp: ExperimentSummary;
+  agent: AgentInfo | null;
 }
 
 interface Props {
   benchmark: Benchmark;
   runOptions: RunOption[];
-  agentOptions: AgentInfo[];
+  agentOptions: { agent: AgentInfo; exp: ExperimentSummary }[];
   selectedAgent: AgentInfo | null;
   selectedExperimentId?: string;
   onRunChange: (exp: ExperimentSummary) => void;
-  onAgentChange: (agent: AgentInfo) => void;
+  onAgentChange: (exp: ExperimentSummary, agent: AgentInfo) => void;
 }
 
 export function TraceControls({
@@ -70,8 +71,8 @@ export function TraceControls({
   const runLabels = runOptions.map((item) => item.label);
   const selectedRunIndex = runOptions.findIndex((item) => item.exp.id === selectedExperimentId);
   const runIndex = Math.max(0, selectedRunIndex);
-  const agentLabels = agentOptions.map((agent) => agent.label);
-  const selectedAgentIndex = agentOptions.findIndex((agent) => agent.id === selectedAgent?.id);
+  const agentLabels = agentOptions.map((item) => item.agent.label);
+  const selectedAgentIndex = agentOptions.findIndex((item) => item.agent.id === selectedAgent?.id);
   const agentIndex = Math.max(0, selectedAgentIndex);
   const cycleByWheel = useCallback(
     (e: React.WheelEvent, field: HTMLElement, onStep: (dir: number) => void) => {
@@ -110,7 +111,7 @@ export function TraceControls({
               cycleByWheel(e, e.currentTarget, (dir) => {
                 const idx = Math.max(0, selectedAgentIndex);
                 const next = agentOptions[(idx + dir + agentOptions.length) % agentOptions.length];
-                onAgentChange(next);
+                onAgentChange(next.exp, next.agent);
               });
             }}
             onKeyDown={(e) => {

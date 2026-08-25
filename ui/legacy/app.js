@@ -55,6 +55,7 @@ const AGENT_FALLBACK = [
   { id: "claude-agent-sdk", label: "Claude SDK", aliases: ["claude-sdk", "claude_sdk", "claudesdk"] },
   { id: "crewai", label: "CrewAI", aliases: [] },
   { id: "google-adk", label: "Google ADK", aliases: ["google_adk"] },
+  { id: "hermes", label: "Hermes", aliases: [] },
   { id: "langchain", label: "LangChain / LangGraph", aliases: ["langgraph", "lang_chain"] },
   { id: "llama-index", label: "LlamaIndex", aliases: ["llama_index"] },
   { id: "openai", label: "OpenAI", aliases: [] },
@@ -781,8 +782,6 @@ function sampleOverview(rec, out, i) {
   stats.append(runStat(rec.latency_ms != null ? fmtMs(rec.latency_ms) : "—", "Latency"));
   stats.append(runStat(out.turns ?? "—", "Turns"));
   stats.append(runStat((out.tool_calls || []).length, "Tool Calls"));
-  const score = sampleScore(rec);
-  stats.append(runStat(score != null ? score.toFixed(2) : "—", "Avg Score"));
   c.append(stats);
 
   const evals = (rec.annotations || []).filter((a) => typeof a.score === "number");
@@ -804,13 +803,6 @@ function runStat(value, label) {
   item.append(el("div", "run-stat-k", esc(label)));
   item.append(el("div", "run-stat-v", esc(value)));
   return item;
-}
-
-function sampleScore(rec) {
-  const xs = (rec.annotations || [])
-    .map((a) => a.score)
-    .filter((x) => typeof x === "number");
-  return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null;
 }
 
 function sampleBrief(label, text) {
@@ -1031,18 +1023,15 @@ function fillEval(b, records, context) {
   const overall = allAvgs.length
     ? allAvgs.reduce((s, x) => s + x, 0) / allAvgs.length
     : null;
-  const passes = records.filter((r) =>
-    (r.annotations || []).some((a) => a.name === "llm_judge" && a.score >= 0.5),
-  ).length;
   const avgLatency = avgNumber(records.map((r) => r.latency_ms));
-  const summary = evalSummaryCard({ overall, records, passes, avgLatency, evaluatorCount: names.length });
+  const summary = evalSummaryCard({ overall, records, avgLatency, evaluatorCount: names.length });
   summary.append(evalContextCard(b, records, context, true));
   body.append(summary);
   body.append(evalFishboneCard(records, overall));
   body.append(evalAssessmentCard(records));
 }
 
-function evalSummaryCard({ overall, records, passes, avgLatency, evaluatorCount }) {
+function evalSummaryCard({ overall, records, avgLatency, evaluatorCount }) {
   const c = el("div", "card eval-summary-card");
   c.append(el("p", "card-label", "SUMMARY"));
   const hasScore = typeof overall === "number";
@@ -1069,7 +1058,6 @@ function evalSummaryCard({ overall, records, passes, avgLatency, evaluatorCount 
 
   const stats = el("div", "summary-stat-grid");
   stats.append(metric(records.length, "samples"));
-  stats.append(metric(`${passes}/${records.length}`, "llm pass"));
   stats.append(metric(avgLatency != null ? fmtMs(avgLatency) : "—", "avg latency"));
   c.append(stats);
   return c;
@@ -1148,7 +1136,6 @@ function evalFishboneCard(records, overall) {
     ["plan_goal_alignment", annotationAverage(records, "plan_goal_alignment")],
     ["plan_completeness", annotationAverage(records, "plan_completeness")],
     ["plan_constraint_adherence", annotationAverage(records, "plan_constraint_adherence")],
-    ["reasoning_coherence", annotationAverage(records, "reasoning_coherence")],
     ["plan_hallucination", annotationAverage(records, "plan_hallucination")],
   ];
   const toolSubMetrics = [
@@ -1160,9 +1147,7 @@ function evalFishboneCard(records, overall) {
   const svgNS = "http://www.w3.org/2000/svg";
   const expandables = [];
   [
-    ["Plan", "plan_parsimony", annotationAverage(records, "plan_parsimony"), planSubMetrics],
-    ["Memory", "hallucination", annotationAverage(records, "hallucination")],
-    ["Skill", "conciseness", annotationAverage(records, "conciseness")],
+    ["Plan", "plan_grade", annotationAverage(records, "plan_grade"), planSubMetrics],
     ["Tool", "tool_recall", annotationAverage(records, "tool_recall"), toolSubMetrics],
     ["Final_Result", "overall_score", overall],
   ].forEach(([node, metricName, score, subMetrics], i) => {
@@ -1293,18 +1278,15 @@ function evalAssessmentCard(records) {
   c.append(el("p", "card-label", "EVALUATION"));
   const tree = el("div", "assessment-tree");
   tree.append(el("div", "assessment-root", "<span>Eval Tree</span><strong>Metrics</strong>"));
-  // Safety metrics come straight from eval/metrics_catalog.json (safety group);
-  // fall back to just hallucination if the catalog could not be loaded.
-  const safetyNames = catalogGroupMetrics("safety");
-  const safetyMetrics = (safetyNames.length ? safetyNames : ["hallucination"]).map((name) => [
-    name,
-    annotationAverage(records, name),
-  ]);
+  const metricValue = (name) => name === "total_token_usage"
+    ? totalTokenUsage(records)
+    : annotationAverage(records, name);
   [
-    ["Efficiency", [["total_token_usage", totalTokenUsage(records)], ["cost", annotationAverage(records, "cost")]]],
-    ["Safety", safetyMetrics],
-    ["Accuracy", [["correctness", annotationAverage(records, "correctness")]]],
-  ].forEach(([label, metrics], i) => {
+    ["Efficiency", catalogGroupMetrics("efficiency")],
+    ["Safety", catalogGroupMetrics("safety")],
+    ["Accuracy", catalogGroupMetrics("correct")],
+  ].forEach(([label, names], i) => {
+    const metrics = names.map((name) => [name, metricValue(name)]);
     const row = el("div", "assessment-row");
     row.append(el("div", "assessment-label", `<span>${String(i + 1).padStart(2, "0")}</span><strong>${esc(label)}</strong>`));
     const values = el("div", "assessment-values");
@@ -1416,7 +1398,7 @@ function inferDomain(name = "") {
   return m ? m[1] : "";
 }
 
-/* ═══════════════════════ span tree (A2E-structured) ═══════════════════════ */
+/* ═══════════════════════ span tree (AE2-structured) ═══════════════════════ */
 async function loadTrace(rec, out, mount) {
   const project = currentExperiment?.project_name;
   if (!rec.trace_id || !project) {

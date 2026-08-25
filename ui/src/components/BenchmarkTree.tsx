@@ -6,6 +6,7 @@ import { Fragment, useState, useMemo } from "react";
 
 const CATS = ["Coding", "Conversational", "Research", "Computer use"];
 const CAPS = ["Skill", "Memory", "Tool"];
+const YEARS = ["2020", "2021", "2022", "2023", "2024", "2025", "2026"];
 
 const DIFF_LABEL: Record<string, [string, string]> = {
   found: ["Foundational", "#8e8e93"],
@@ -14,19 +15,9 @@ const DIFF_LABEL: Record<string, [string, string]> = {
   front: ["Frontier", "#ff375f"],
 };
 
-function domainColumn(benchmark: Benchmark): number {
-  const category = benchmark.cat;
-  // Every database benchmark must be present on Domain × Year. The inference
-  // layer normally assigns 0..3; this fallback prevents malformed/unknown
-  // presentation metadata from silently dropping a card from the grid.
-  return Number.isInteger(category) && Number(category) >= 0 && Number(category) < CATS.length
-    ? Number(category)
-    : 2;
-}
-
 const TREE_FACES = [
-  { title: "Domain × Year", cols: CATS, colOf: domainColumn },
-  { title: "Capability Dimension · Skill / Memory / Tool", cols: CAPS, colOf: (b: Benchmark) => b.dim },
+  { title: "Domain × Year", cols: CATS, colOf: (b: Benchmark) => b.cat },
+  { title: "Capability · Skill / Memory / Tool", cols: CAPS, colOf: (b: Benchmark) => b.dim },
 ] as const;
 
 interface Props {
@@ -85,7 +76,7 @@ function BenchGrid({
                           const sel = benchDefaultSelection(b, experiments);
                           if (sel) onSelect(sel.b, sel.exp, sel.agent);
                         } else {
-                          onToast(`${b.name}: No data available`);
+                          onToast(`${b.name}: No data`);
                         }
                       }}
                     >
@@ -113,7 +104,8 @@ function CubeScene({
   const [faceIdx, setFaceIdx] = useState(0);
   const [spin, setSpin] = useState<{ from: number; to: number; key: number } | null>(null);
   const years = useMemo(() => {
-    return [...new Set(benchmarks.map((b) => b.year).filter(Boolean))].sort();
+    const dynamic = [...new Set(benchmarks.map((b) => b.year).filter(Boolean))].sort();
+    return dynamic.length ? dynamic : YEARS;
   }, [benchmarks]);
 
   const flip = () => {
@@ -173,8 +165,6 @@ function CubeScene({
 
 export function BenchmarkTree({ benchmarks, experiments, selectedKey, onSelect, onToast }: Props) {
   const linked = benchmarks.filter((b) => benchExperiments(b, experiments).length).map((b) => b.name);
-  const experimentNoun = experiments.length === 1 ? "experiment" : "experiments";
-  const harnessNoun = linked.length === 1 ? "harness" : "harnesses";
 
   return (
     <article className="panel bench">
@@ -182,8 +172,8 @@ export function BenchmarkTree({ benchmarks, experiments, selectedKey, onSelect, 
         <p className="kicker">Task</p>
         <h2 className="bench-title">Agent benchmark tree</h2>
         <p className="muted" style={{ margin: "-4px 0 4px", fontSize: 12 }}>
-          Current database: {experiments.length} {experimentNoun}
-          {linked.length ? ` · ${linked.length} ${harnessNoun}: ${esc(linked.join(", "))}` : " · No experiment data"}
+          {experiments.length} experiments in the current database
+          {linked.length ? ` · ${linked.length} benchmarks: ${esc(linked.join(", "))}` : " · No experiment data"}
         </p>
         <CubeScene
           benchmarks={benchmarks}

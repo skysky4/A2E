@@ -2,15 +2,15 @@ import type { AgentInfo, ExperimentContext, ExperimentRecord } from "../api/type
 import { CATS, type Benchmark } from "../data/benchmarks";
 import {
   annotationAverage,
+  averageRecordCost,
   formatMetricValue,
-  totalCost,
   totalTokenUsage,
 } from "../utils/eval";
 import { getMetricDescription, metricRangeClass } from "../utils/metricDescriptions";
 import { FishboneCard } from "./FishboneCard";
 import { MetricTooltip } from "./MetricTooltip";
 
-const EFFICIENCY_METRICS = ["total_token_usage", "cost", "answer_cost", "turn_count", "elapsed_time"] as const;
+const EFFICIENCY_METRICS = ["conciseness", "total_token_usage", "cost", "turn_count", "elapsed_time"] as const;
 const SAFETY_METRICS = [
   "hallucination",
   "privacy_leakage",
@@ -21,11 +21,7 @@ const SAFETY_METRICS = [
 ] as const;
 const ACCURACY_METRICS = [
   "correctness",
-  "instruction_following",
-  "llm_judge",
   "task_succeeded",
-  "execution_completion",
-  "error_absence",
 ] as const;
 
 interface Props {
@@ -37,7 +33,6 @@ interface Props {
   projectName?: string;
   testedAgentModel?: string;
   judgeModel?: string;
-  loading?: boolean;
 }
 
 function infoItem(label: string, value: string) {
@@ -58,20 +53,13 @@ export function EvalPanel({
   projectName,
   testedAgentModel,
   judgeModel,
-  loading = false,
 }: Props) {
   if (!benchmark || !records.length) {
     return (
       <article className="panel eval">
         <div className="panel-inner" id="eval-body">
           <p className="kicker">Eval</p>
-          <p className="muted">
-            {loading
-              ? "Loading the selected evaluation…"
-              : benchmark
-                ? "No samples for the selected run"
-                : "← Select a benchmark in Task"}
-          </p>
+          <p className="muted">← Select a benchmark in Task</p>
         </div>
       </article>
     );
@@ -100,41 +88,19 @@ export function EvalPanel({
     return null;
   };
 
-  const countPasses = (name: string) => {
-    const target = name.toLowerCase();
-    return records.filter((r) => {
-      const ann = (r.annotations ?? []).find((a) => String(a.name).toLowerCase() === target);
-      if (!ann) return false;
-      if (typeof ann.score === "number") return ann.score >= 0.5;
-      return String(ann.label ?? "").toLowerCase() === "correct";
-    }).length;
-  };
-
-  const overall = avgFirst(["correctness", "correct", "accuracy", "task_succeeded", "llm_judge"]);
-  const llmPasses = countPasses("llm_judge");
-  const totalCostValue = totalCost(records);
+  const overall = avgFirst(["correctness", "task_succeeded"]);
   const totalToken = totalTokenUsage(records);
   const hasScore = typeof overall === "number";
   const pct = hasScore ? Math.max(0, Math.min(100, overall * 100)) : 0;
   const good = hasScore && overall >= 0.5;
   const overallDescription = [
     "- Meaning: Benchmark-level average correctness score used as the overall result.",
-    "- Calculation: Average of the first available correctness-style metric: correctness, correct, accuracy, task_succeeded, or llm_judge.",
+    "- Calculation: Average of the first available correctness-style metric: correctness or task_succeeded.",
     "- Display: 0 to 1; higher is better.",
-  ].join("\n");
-  const llmPassDescription = [
-    "- Meaning: Number of samples that pass the LLM judge.",
-    "- Calculation: Counts samples whose llm_judge score is at least 0.5; label fallback is correct.",
-    "- Display: passed samples / total samples.",
-  ].join("\n");
-  const totalCostDescription = [
-    "- Meaning: Total monetary cost across the selected benchmark.",
-    "- Calculation: Sum of cost-like fields across all samples, usually in USD.",
-    "- Display: Non-negative currency value.",
   ].join("\n");
   const totalTokenDescription = [
     "- Meaning: Total token usage across the selected benchmark.",
-    "- Calculation: Sum of prompt and completion tokens across all samples when available; falls back to total_token_usage annotations.",
+    "- Calculation: Uses sample prompt and completion tokens first, then falls back to the total_token_usage annotation.",
     "- Display: Non-negative token count.",
   ].join("\n");
   const domain =
@@ -144,7 +110,7 @@ export function EvalPanel({
 
   const metricValue = (name: string): number | null => {
     if (name === "total_token_usage") return totalTokenUsage(records);
-    if (name === "cost") return annotationAverage(records, "cost");
+    if (name === "cost") return averageRecordCost(records);
     return annotationAverage(records, name);
   };
 
@@ -171,23 +137,9 @@ export function EvalPanel({
                 {records.length} samples · average correctness
               </div>
             </div>
-          </div>
-          <div className="summary-stat-grid">
-            <div className="metric has-metric-tooltip">
-              <div className="metric-v">
-                {llmPasses}/{records.length}
-              </div>
-              <div className="metric-k">llm pass</div>
-              <MetricTooltip text={llmPassDescription} />
-            </div>
-            <div className="metric has-metric-tooltip">
-              <div className="metric-v">{formatMetricValue("total_cost", totalCostValue)}</div>
-              <div className="metric-k">total cost</div>
-              <MetricTooltip text={totalCostDescription} />
-            </div>
-            <div className="metric has-metric-tooltip">
-              <div className="metric-v">{formatMetricValue("total_token", totalToken)}</div>
-              <div className="metric-k">total_token</div>
+            <div className="summary-token has-metric-tooltip">
+              <span>total_token</span>
+              <strong>{formatMetricValue("total_token", totalToken)}</strong>
               <MetricTooltip text={totalTokenDescription} />
             </div>
           </div>
@@ -223,7 +175,7 @@ export function EvalPanel({
               <strong>Metrics</strong>
             </div>
             {[
-              ["Accuracy", "accuracy", ACCURACY_METRICS.map((name) => [name, metricValue(name)] as const)],
+              ["Correctness", "correctness", ACCURACY_METRICS.map((name) => [name, metricValue(name)] as const)],
               ["Safety", "safety", SAFETY_METRICS.map((name) => [name, metricValue(name)] as const)],
               ["Efficiency", "efficiency", EFFICIENCY_METRICS.map((name) => [name, metricValue(name)] as const)],
             ].map(([label, group, metrics], i) => (

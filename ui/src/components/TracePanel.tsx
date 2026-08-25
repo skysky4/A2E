@@ -4,7 +4,7 @@ import type { ExperimentRecord } from "../api/types";
 import { BraceBig } from "./BraceBig";
 import { SpanTree } from "./SpanTree";
 import { pretty } from "../utils/format";
-import { fmtMs, sampleScore } from "../utils/eval";
+import { fmtMs, formatMetricValue, recordCost, recordTokenUsage } from "../utils/eval";
 import { getMetricDescription, metricRangeClass } from "../utils/metricDescriptions";
 import { MetricTooltip } from "./MetricTooltip";
 
@@ -20,7 +20,7 @@ const TRACE_METRIC_GROUPS: Array<{ id: TraceMetricGroupId; label: string; metric
   {
     id: "efficiency",
     label: "Efficiency",
-    metrics: ["total_token_usage", "cost", "answer_cost", "turn_count", "elapsed_time"],
+    metrics: ["conciseness", "total_token_usage", "cost", "turn_count", "elapsed_time"],
   },
   {
     id: "safety",
@@ -36,19 +36,17 @@ const TRACE_METRIC_GROUPS: Array<{ id: TraceMetricGroupId; label: string; metric
   },
   {
     id: "accuracy",
-    label: "Accuracy",
+    label: "Correctness",
     metrics: [
       "correctness",
-      "instruction_following",
-      "llm_judge",
       "task_succeeded",
-      "execution_completion",
-      "error_absence",
     ],
   },
 ];
 
 function scoreForMetric(rec: ExperimentRecord, name: string): number | null {
+  if (name === "total_token_usage") return recordTokenUsage(rec);
+  if (name === "cost") return recordCost(rec);
   const target = name.toLowerCase();
   const score = (rec.annotations ?? []).find((a) => String(a.name).toLowerCase() === target)?.score;
   return typeof score === "number" && Number.isFinite(score) ? score : null;
@@ -89,7 +87,7 @@ function CollapsibleBrief({ label, text }: { label: string; text: string }) {
       <button
         type="button"
         className="brief-toggle"
-        aria-label={expanded ? `Collapse ${label}` : `Expand ${label}`}
+        aria-label={expanded ? `${label} Collapse` : `${label} Expand`}
         aria-expanded={expanded}
         title={expanded ? "Collapse" : "Expand"}
         onClick={() => setExpanded((v) => !v)}
@@ -123,18 +121,12 @@ function SampleCard({
   const status = String(out.status ?? (rec.error ? "error" : "ok"));
   const instruction = String(input.instruction ?? input.question ?? pretty(input));
   const traceId = rec.trace_id || String(out.trace_id ?? "");
-  const score = sampleScore(rec);
   const turnValue = numericValue(out.turns);
   const toolCallCount = Array.isArray(out.tool_calls) ? out.tool_calls.length : 0;
   const latencyDescription = [
     "- Meaning: End-to-end runtime duration for this sample.",
     "- Source: rec.latency_ms from the run record.",
     "- Display: formatted seconds or milliseconds; lower is usually better.",
-  ].join("\n");
-  const avgScoreDescription = [
-    "- Meaning: Average score across numeric annotations available on this sample.",
-    "- Calculation: Arithmetic mean of this sample's annotation scores.",
-    "- Display: 0 to 1 when the underlying metrics are normalized; higher is better.",
   ].join("\n");
   const [metricGroup, setMetricGroup] = useState<TraceMetricGroupId>("efficiency");
   const selectedMetricGroup = TRACE_METRIC_GROUPS.find((group) => group.id === metricGroup) ?? TRACE_METRIC_GROUPS[0];
@@ -219,11 +211,6 @@ function SampleCard({
                 <div className="run-stat-v">{toolCallCount}</div>
                 <MetricTooltip text={getMetricDescription("tool_call_count", toolCallCount)} />
               </div>
-              <div className="run-stat has-metric-tooltip">
-                <div className="run-stat-k">Avg Score</div>
-                <div className="run-stat-v">{score != null ? score.toFixed(2) : "—"}</div>
-                <MetricTooltip text={avgScoreDescription} />
-              </div>
             </div>
             <div className="run-metric-browser">
               <div className="run-metric-options" role="tablist" aria-label="Metric categories">
@@ -250,7 +237,7 @@ function SampleCard({
                   visibleScores.map(([name, value]) => (
                     <div key={name} className={`eval-score has-metric-tooltip ${metricRangeClass(name, value)}`}>
                       <span className="eval-score-name">{name}</span>
-                      <span className="eval-score-value">{value.toFixed(2)}</span>
+                      <span className="eval-score-value">{formatMetricValue(name, value)}</span>
                       <MetricTooltip text={getMetricDescription(name, value)} />
                     </div>
                   ))
@@ -269,7 +256,7 @@ function SampleCard({
               <div className="run-title-main">Trace</div>
             </div>
             {loading ? <p className="muted">Loading trace…</p> : null}
-            {!loading && spanError ? <p className="muted">Failed to load trace: {spanError}</p> : null}
+            {!loading && spanError ? <p className="muted">Trace failed to load: {spanError}</p> : null}
             {!loading && spans && spans.length > 0 ? <SpanTree spans={spans} /> : null}
             {!loading && !spanError && spans && spans.length === 0 ? <ToolFallback out={out} /> : null}
             {!loading && !spanError && spans === null && !traceId ? (
@@ -362,7 +349,7 @@ export function TracePanel({
     const card = vp.querySelectorAll<HTMLElement>(".scard-card")[activeSample];
     if (!card) return;
     if (scrollReportedSampleRef.current === activeSample) return;
-    // Keep content vertically centered when it does not overflow; do not force scrollTo.
+    // Keep short content centered without forcing a scroll.
     if (vp.scrollHeight <= vp.clientHeight + 2) {
       vp.scrollTop = 0;
       return;
@@ -383,10 +370,6 @@ export function TracePanel({
     );
   }
 
-  const allScores = records
-    .flatMap((r) => (r.annotations ?? []).map((a) => a.score))
-    .filter((x): x is number => typeof x === "number");
-  const avg = allScores.length ? (allScores.reduce((s, x) => s + x, 0) / allScores.length).toFixed(2) : "—";
   const braceStyle = { height: `${braceH}px` };
 
   return (
@@ -411,7 +394,7 @@ export function TracePanel({
               />
             ))}
           </div>
-          <BraceBig side="right" l1="Eval" l2={`avg ${avg}`} onClick={onGoEval} style={braceStyle} />
+          <BraceBig side="right" l1="Eval" l2="Metrics" onClick={onGoEval} style={braceStyle} />
         </div>
       </div>
     </article>

@@ -14,9 +14,7 @@ export interface Benchmark {
   experimentIds?: string[];
 }
 
-// Presentation metadata only. Benchmark cards are never created from this list;
-// the current database's experiment metadata is the sole source of card names/counts.
-const BENCHMARK_PRESENTATION_PRESETS: Benchmark[] = [
+export const BENCHMARKS: Benchmark[] = [
   { name: "HumanEval", cat: 0, year: "2021", diff: "found", key: "humaneval" },
   { name: "SWE-bench Lite", cat: 0, year: "2024", diff: "hard", dim: 2, key: "swe-bench-lite" },
   { name: "SWE-bench Verified", cat: 0, year: "2024", diff: "hard", dim: 2, key: "swe-bench-verified" },
@@ -49,8 +47,6 @@ const BENCHMARK_PRESENTATION_PRESETS: Benchmark[] = [
 export function normKey(s: string): string {
   return String(s || "")
     .toLowerCase()
-    .normalize("NFKD")
-    .replace(/τ/g, "tau")
     .replace(/[^a-z0-9]/g, "");
 }
 
@@ -59,12 +55,7 @@ export function benchKey(b: Benchmark): string {
 }
 
 const BENCHMARK_RELEASE_YEARS: Readonly<Record<string, string>> = {
-  ...Object.fromEntries(
-    BENCHMARK_PRESENTATION_PRESETS.map((benchmark) => [
-      normKey(benchKey(benchmark)),
-      benchmark.year,
-    ]),
-  ),
+  ...Object.fromEntries(BENCHMARKS.map((benchmark) => [normKey(benchKey(benchmark)), benchmark.year])),
   mmlu: "2020",
   gsm8k: "2021",
   persistbench: "2026",
@@ -79,11 +70,6 @@ const BENCHMARK_RELEASE_YEARS: Readonly<Record<string, string>> = {
   hellaswag: "2019",
   openbookqa: "2018",
   math: "2021",
-  // HumanEval-test is the original HumanEval test split released with the 2021 paper.
-  humanevaltest: "2021",
-  // Benchmark/task release years; these intentionally need not equal later paper years.
-  theagentcompany: "2024",
-  tau3bench: "2026",
   terminalbench2: "2025",
 };
 
@@ -116,10 +102,6 @@ const BENCHMARK_META_KEYS = [
   "task",
   "task_name",
   "suite",
-  "harness",
-  "harness_name",
-  "eval_harness",
-  "evaluation_harness",
 ] as const;
 
 function dbLabel(value: unknown): string {
@@ -127,7 +109,7 @@ function dbLabel(value: unknown): string {
 }
 
 function displayBenchmarkName(label: string): string {
-  return label.replace(/^a2e[-_\s]+/i, "").trim() || label;
+  return label.replace(/^ae2[-_\s]+/i, "").trim() || label;
 }
 
 function firstString(values: unknown[]): string {
@@ -140,11 +122,7 @@ function firstString(values: unknown[]): string {
 
 function experimentBenchmarkLabel(exp: ExperimentSummary): string {
   const meta = exp.metadata ?? {};
-  const datasetMeta = exp.dataset_metadata ?? {};
-  const metadataLabel = firstString([
-    ...BENCHMARK_META_KEYS.map((key) => meta[key]),
-    ...BENCHMARK_META_KEYS.map((key) => datasetMeta[key]),
-  ]);
+  const metadataLabel = firstString(BENCHMARK_META_KEYS.map((key) => meta[key]));
   return (
     dbLabel(metadataLabel) ||
     dbLabel(exp.dataset_name) ||
@@ -154,18 +132,9 @@ function experimentBenchmarkLabel(exp: ExperimentSummary): string {
   );
 }
 
-function databaseBenchmarkYear(exp: ExperimentSummary): string | undefined {
-  const metaYear = firstString([
-    exp.metadata?.benchmark_year,
-    exp.metadata?.year,
-    exp.dataset_metadata?.benchmark_year,
-    exp.dataset_metadata?.year,
-  ]);
+function experimentYear(exp: ExperimentSummary): string {
+  const metaYear = firstString([exp.metadata?.benchmark_year, exp.metadata?.year]);
   if (/^\d{4}$/.test(metaYear)) return metaYear;
-  return undefined;
-}
-
-function experimentCreatedYear(exp: ExperimentSummary): string {
   const createdYear = String(exp.created_at ?? "").match(/\b(20\d{2})\b/)?.[1];
   return createdYear ?? new Date().getFullYear().toString();
 }
@@ -219,10 +188,10 @@ function inferDiff(label: string): BenchDiff {
   return "med";
 }
 
-function presentationPresetFor(label: string): Benchmark | undefined {
+function staticBenchmarkFor(label: string): Benchmark | undefined {
   const key = normKey(label);
   if (!key) return undefined;
-  return BENCHMARK_PRESENTATION_PRESETS.find((b) => {
+  return BENCHMARKS.find((b) => {
     const bench = normKey(benchKey(b));
     const name = normKey(b.name);
     return key === bench || key === name;
@@ -238,9 +207,7 @@ export function benchmarksFromExperiments(experiments: ExperimentSummary[]): Ben
   for (const exp of experiments) {
     const rawLabel = experimentBenchmarkLabel(exp);
     const displayLabel = displayBenchmarkName(rawLabel);
-    const known = presentationPresetFor(displayLabel);
-    // Preserve the database value as the identity: two distinct database labels
-    // must remain two distinct cards, even if punctuation/casing is similar.
+    const known = staticBenchmarkFor(displayLabel);
     const groupKey = rawLabel;
     if (!groupKey) continue;
     const prev = byKey.get(groupKey);
@@ -248,11 +215,7 @@ export function benchmarksFromExperiments(experiments: ExperimentSummary[]): Ben
       pushUnique((prev.experimentIds ??= []), exp.id);
       continue;
     }
-    const year =
-      databaseBenchmarkYear(exp) ??
-      known?.year ??
-      benchmarkReleaseYear(displayLabel) ??
-      experimentCreatedYear(exp);
+    const year = known?.year ?? benchmarkReleaseYear(displayLabel) ?? experimentYear(exp);
     byKey.set(groupKey, {
       name: displayLabel,
       cat: known?.cat ?? inferCategory(displayLabel),

@@ -5,7 +5,6 @@ type RangeState = "ok" | "warn" | "unknown";
 type ScoreDomain = NonNullable<MetricCatalogEntry["output_contract"]>["score_domain"];
 
 const FALLBACK_DESC: Record<string, string> = {
-  total_cost: "Total monetary cost across the selected benchmark, usually in USD.",
   total_token: "Total prompt and completion tokens consumed by the selected benchmark.",
 };
 
@@ -71,8 +70,8 @@ function scoreContractText(entry: MetricCatalogEntry | null, name: string): stri
   }
   if (entry?.score_type === "binary" || entry?.score_type === "graded") return "Score should be 0 to 1.";
   if (entry?.score_type === "magnitude") return "Score should be a non-negative raw magnitude.";
-  if (key === "total_cost" || key === "total_token") return "Displayed aggregate should be non-negative.";
-  return "Score contract is not defined in eval/metrics_catalog.json.";
+  if (key === "total_token") return "Displayed aggregate should be non-negative.";
+  return "Score contract is not defined in metric_output_contract.json.";
 }
 
 function labelContractText(entry: MetricCatalogEntry | null): string {
@@ -121,7 +120,7 @@ export function metricRangeState(name: string, value: number | null | undefined)
   if (entry?.score_type === "binary" || entry?.score_type === "graded") {
     return value >= 0 && value <= 1 ? "ok" : "warn";
   }
-  if (entry?.score_type === "magnitude" || key === "total_cost" || key === "total_token") {
+  if (entry?.score_type === "magnitude" || key === "total_token") {
     return value >= 0 ? "ok" : "warn";
   }
   return "unknown";
@@ -139,7 +138,7 @@ export function getMetricDescription(name: string, value?: number | null): strin
   const score = scoreContractText(entry, name);
   const type = entry
     ? "Evaluator: " + (entry.kind ?? "not defined") + "; score type: " + (entry.score_type ?? "not defined") + "."
-    : "Evaluator and score type are not defined in eval/metrics_catalog.json.";
+    : "Evaluator and score type are not defined in metric_output_contract.json.";
   const current = typeof value === "number" && Number.isFinite(value)
     ? "Displayed value: " + fmtNumber(value) + " (" + (metricRangeState(name, value) === "warn" ? "outside expected range" : "inside expected range") + ")."
     : "";

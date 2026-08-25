@@ -19,7 +19,6 @@ export interface ExperimentSummary {
   failed_run_count?: number;
   project_name?: string;
   metadata?: Record<string, unknown>;
-  dataset_metadata?: Record<string, unknown>;
 }
 
 export interface Annotation {
@@ -40,11 +39,13 @@ export interface ExperimentRecord {
   latency_ms?: number;
   prompt_token_count?: number;
   completion_token_count?: number;
+  calculated_cost?: number;
   error?: string | null;
 }
 
 export interface SpanNode {
   span_id: string;
+  trace_id?: string;
   parent_id?: string | null;
   name: string;
   span_kind?: string;

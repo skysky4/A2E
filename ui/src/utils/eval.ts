@@ -2,40 +2,6 @@ import type { AgentInfo, ExperimentRecord, ExperimentSummary } from "../api/type
 import { benchExperiments, normKey, type Benchmark } from "../data/benchmarks";
 import { dbAgentFromExperiment } from "./dbIdentity";
 
-export function agentsForExperiments(experiments: ExperimentSummary[]): AgentInfo[] {
-  const byId = new Map<string, AgentInfo>();
-  for (const experiment of experiments) {
-    const agent = dbAgentFromExperiment(experiment);
-    if (agent && !byId.has(agent.id)) byId.set(agent.id, agent);
-  }
-  return [...byId.values()];
-}
-
-export function experimentsForAgent(
-  experiments: ExperimentSummary[],
-  agent: AgentInfo | null,
-): ExperimentSummary[] {
-  if (!agent) return experiments;
-  return experiments.filter((experiment) => dbAgentFromExperiment(experiment)?.id === agent.id);
-}
-
-export function newestExperimentsFirst(experiments: ExperimentSummary[]): ExperimentSummary[] {
-  return [...experiments].sort((a, b) => {
-    const createdAt = String(b.created_at ?? "").localeCompare(String(a.created_at ?? ""));
-    return createdAt || String(b.id).localeCompare(String(a.id));
-  });
-}
-
-export function hasEvaluationResults(records: ExperimentRecord[]): boolean {
-  return records.some((record) =>
-    (record.annotations ?? []).some(
-      (annotation) =>
-        (typeof annotation.score === "number" && Number.isFinite(annotation.score)) ||
-        (typeof annotation.label === "string" && annotation.label.trim().length > 0),
-    ),
-  );
-}
-
 export function agentTokens(agent: AgentInfo): string[] {
   return [agent.id, agent.label, ...(agent.aliases ?? [])].map(normKey).filter(Boolean);
 }
@@ -76,11 +42,6 @@ export function defaultSelection(
   return null;
 }
 
-export function sampleScore(rec: ExperimentRecord): number | null {
-  const xs = (rec.annotations ?? []).map((a) => a.score).filter((x): x is number => typeof x === "number");
-  return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null;
-}
-
 export function annotationAverage(records: ExperimentRecord[], name: string): number | null {
   const target = name.toLowerCase();
   const xs = records
@@ -94,46 +55,6 @@ export function annotationSum(records: ExperimentRecord[], name: string): number
   const xs = records
     .map((r) => (r.annotations ?? []).find((a) => String(a.name).toLowerCase() === target)?.score)
     .filter((x): x is number => typeof x === "number");
-  return xs.length ? xs.reduce((s, x) => s + x, 0) : null;
-}
-
-function numericValue(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function firstNumericField(source: Record<string, unknown> | undefined, names: string[]): number | null {
-  if (!source) return null;
-  for (const name of names) {
-    const value = numericValue(source[name]);
-    if (value !== null) return value;
-  }
-  return null;
-}
-
-function recordCost(rec: ExperimentRecord): number | null {
-  const names = ["cost", "total_cost", "cost_usd", "total_cost_usd", "totalCost", "costUsd", "totalCostUsd"];
-  const fromRecord = firstNumericField(rec as unknown as Record<string, unknown>, names);
-  if (fromRecord !== null) return fromRecord;
-  const fromOutput = firstNumericField(rec.output, names);
-  if (fromOutput !== null) return fromOutput;
-  const fromMetadata = firstNumericField(rec.metadata, names);
-  if (fromMetadata !== null) return fromMetadata;
-
-  for (const name of names) {
-    const annotation = (rec.annotations ?? []).find((a) => String(a.name).toLowerCase() === name.toLowerCase());
-    const value = numericValue(annotation?.score);
-    if (value !== null) return value;
-  }
-  return null;
-}
-
-export function totalCost(records: ExperimentRecord[]): number | null {
-  const xs = records.map(recordCost).filter((x): x is number => typeof x === "number");
   return xs.length ? xs.reduce((s, x) => s + x, 0) : null;
 }
 
@@ -151,7 +72,7 @@ export function formatMetricValue(name: string, value: number | null | undefined
   if (name === "total_token_usage" || name === "total_token" || name === "answer_cost") {
     return Math.round(value).toLocaleString("en-US");
   }
-  if (name === "cost" || name === "total_cost") return formatUsd(value);
+  if (name === "cost") return formatUsd(value);
   if (name === "tool_call_count") return (Math.round(value * 10) / 10).toLocaleString("en-US");
   return value.toFixed(2);
 }
@@ -165,13 +86,33 @@ export function formatUsd(value: number): string {
 }
 
 export function totalTokenUsage(records: ExperimentRecord[]): number | null {
-  let total = 0;
-  let seen = false;
-  for (const r of records) {
-    const prompt = typeof r.prompt_token_count === "number" ? r.prompt_token_count : 0;
-    const completion = typeof r.completion_token_count === "number" ? r.completion_token_count : 0;
-    if (prompt || completion) seen = true;
-    total += prompt + completion;
+  const values = records
+    .map(recordTokenUsage)
+    .filter((value): value is number => value != null);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+}
+
+export function recordTokenUsage(record: ExperimentRecord): number | null {
+  const hasPrompt = typeof record.prompt_token_count === "number";
+  const hasCompletion = typeof record.completion_token_count === "number";
+  if (hasPrompt || hasCompletion) {
+    return (record.prompt_token_count ?? 0) + (record.completion_token_count ?? 0);
   }
-  return seen ? total : annotationAverage(records, "total_token_usage");
+  const annotation = (record.annotations ?? []).find(
+    (item) => String(item.name).toLowerCase() === "total_token_usage",
+  );
+  return typeof annotation?.score === "number" ? annotation.score : null;
+}
+
+export function recordCost(record: ExperimentRecord): number | null {
+  const annotation = (record.annotations ?? []).find(
+    (item) => String(item.name).toLowerCase() === "cost",
+  );
+  if (typeof annotation?.score === "number") return annotation.score;
+  return typeof record.calculated_cost === "number" ? record.calculated_cost : null;
+}
+
+export function averageRecordCost(records: ExperimentRecord[]): number | null {
+  const values = records.map(recordCost).filter((value): value is number => value != null);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 }
