@@ -1,0 +1,27 @@
+schema_version: 1
+name: autogen-isolated-smoke
+models:
+  - openai-compatible
+benchmarks:
+  - id: mmlu
+    sample:
+      n: 1
+      seed: 20260822
+    graders:
+      - id: mc_letter
+        mode: posthoc
+        required: true
+harnesses:
+  - autogen-agentchat
+repetitions: 1
+execution:
+  n_concurrent_trials: 1
+  n_active_cells: 1
+  n_concurrent_sandboxes: 1
+  n_concurrent_graders: 1
+  n_concurrent_uploads: 1
+  queue_capacity: 1
+  cancellation_grace_seconds: 30
+  timeout_seconds: 120
+  retry:
+    max_retries: 0

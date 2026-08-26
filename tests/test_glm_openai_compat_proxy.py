@@ -168,7 +168,7 @@ class _FakeUpstreamHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         pass
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length") or 0)
         type(self).received_payload = json.loads(self.rfile.read(length))
         response = {
@@ -253,3 +253,59 @@ def test_end_to_end_proxy_normalizes_request_and_response() -> None:
     assert arguments == '{"command":"pwd"}'
     assert metrics.snapshot()["request_content_null_normalized"] == 1
     assert metrics.snapshot()["response_arguments_repaired"] == 1
+
+
+class _RetryUpstreamHandler(BaseHTTPRequestHandler):
+    calls = 0
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+    def do_POST(self) -> None:
+        type(self).calls += 1
+        length = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(length)
+        if type(self).calls == 1:
+            body = b'{"error":"busy"}'
+            self.send_response(429)
+            self.send_header("Retry-After", "0")
+        else:
+            body = b'{"choices":[]}'
+            self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def test_proxy_retries_transient_upstream_status() -> None:
+    _RetryUpstreamHandler.calls = 0
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _RetryUpstreamHandler)
+    _serve_in_thread(upstream)
+    metrics = ProxyMetrics()
+    proxy = create_server(
+        host="127.0.0.1",
+        port=0,
+        config=ProxyConfig(
+            upstream_base_url=f"http://127.0.0.1:{upstream.server_address[1]}/v1",
+            retry_backoff_seconds=0,
+        ),
+        metrics=metrics,
+    )
+    _serve_in_thread(proxy)
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{proxy.server_address[1]}/v1/chat/completions",
+        data=b'{"model":"glm-5.3","messages":[]}',
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            assert response.status == 200
+    finally:
+        proxy.shutdown()
+        proxy.server_close()
+        upstream.shutdown()
+        upstream.server_close()
+    assert _RetryUpstreamHandler.calls == 2
+    assert metrics.snapshot()["upstream_retries"] == 1

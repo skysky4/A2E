@@ -28,12 +28,12 @@ class _Sandbox:
             return SimpleNamespace(returncode=0, stdout="/usr/bin:/bin", stderr="")
         return SimpleNamespace(returncode=0, stdout="pytest output", stderr="")
 
-    def read_file(self, path: str, text: bool = True) -> str:
-        assert text
+    def read_file(self, path: str, text: bool = True) -> str | bytes:
         if path.endswith("reward.txt"):
-            return self.reward
+            return self.reward if text else self.reward.encode()
         if path.endswith("ctrf.json") and self.ctrf is not None:
-            return json.dumps(self.ctrf)
+            raw = json.dumps(self.ctrf, separators=(",", ":")).encode()
+            return raw.decode() if text else raw
         raise FileNotFoundError(path)
 
 
@@ -95,6 +95,8 @@ def test_reward_without_ctrf_is_verifier_error(tmp_path: Path, monkeypatch) -> N
 
 def test_reward_and_ctrf_must_both_confirm_success(tmp_path: Path, monkeypatch) -> None:
     _trusted_tools(tmp_path, monkeypatch)
+    attempt_dir = tmp_path / "attempt"
+    monkeypatch.setenv("A2E_TRIAL_ATTEMPT_DIR", str(attempt_dir))
     sandbox = _Sandbox(
         reward="1",
         ctrf={
@@ -111,3 +113,11 @@ def test_reward_and_ctrf_must_both_confirm_success(tmp_path: Path, monkeypatch) 
     assert result["tb_tests_total"] == 3
     assert result["tb_tests_passed"] == 3
     assert result["tb_tests_failed"] == 0
+    assert result["tb_ctrf"] == sandbox.ctrf
+    artifact = result["tb_ctrf_artifact"]
+    ctrf_path = attempt_dir / artifact["path"]
+    assert ctrf_path.read_bytes() == json.dumps(
+        sandbox.ctrf, separators=(",", ":")
+    ).encode()
+    assert artifact["size_bytes"] == ctrf_path.stat().st_size
+    assert len(artifact["sha256"]) == 64

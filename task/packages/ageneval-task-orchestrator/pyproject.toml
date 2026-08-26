@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ageneval-task-orchestrator"
+version = "0.1.0"
+description = "Harbor-inspired campaign scheduler for A2E task evaluations"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+  "ageneval-model-gateway>=0.1.0",
+  "ageneval-task-core>=0.1.0",
+  "ageneval-task-runners>=0.1.0",
+  "ageneval-task-tau-bench>=0.1.0",
+  "ageneval-task-tau2>=0.1.0",
+  "ageneval-task-tau3>=0.1.0",
+  "ageneval-task-mmlu>=0.1.0",
+  "ageneval-task-gsm8k>=0.1.0",
+  "ageneval-task-humaneval>=0.1.0",
+  "ageneval-task-persistbench>=0.1.0",
+  "ageneval-task-qa-suite>=0.1.0",
+  "ageneval-task-traject-bench>=0.1.0",
+  "ageneval-task-deepsearchqa>=0.1.0",
+  "ageneval-task-swe-bench>=0.1.0",
+  "ageneval-task-swe-bench-pro>=0.1.0",
+  "ageneval-task-gdpval>=0.1.0",
+  "ageneval-task-terminal-bench-2>=0.1.0",
+  "ageneval-task-terminal-bench-2-1>=0.1.0",
+  "ageneval-task-claude-sdk-agent>=0.1.0",
+  "ageneval-task-langgraph-agent>=0.1.0",
+  "ageneval-task-agent-smolagents>=0.1.0",
+  "ageneval-task-agent-openai-agents>=0.1.0",
+  "ageneval-task-agent-google-adk>=0.1.0",
+  "ageneval-task-agent-agno>=0.1.0",
+  "ageneval-task-agent-llama-index>=0.1.0",
+  "ageneval-task-agent-crewai>=0.1.0",
+  "a2e-client>=2.0.0",
+  "a2e-evals>=3.0.0",
+  "httpx>=0.27",
+  "pydantic>=2.0",
+  "pyyaml>=6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ageneval"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/ageneval"]

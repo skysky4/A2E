@@ -25,6 +25,11 @@ Docker image:
 5. A run is resolved only when `reward.txt` and a non-empty CTRF report both
    confirm that every test passed. Missing CTRF is a `verifier_error`, not a
    graded task failure.
+6. Before the container is cleaned, the exact `ctrf.json` bytes are atomically
+   copied into the Trial attempt's `verifier/ctrf.json`. Its path, byte size,
+   SHA-256, full parsed JSON, and summary counts are retained in the Trial
+   output; Campaign uploads therefore keep the complete parsed report in the
+   existing ExperimentRun JSON without requiring a Server schema change.
 
 The 89 task definitions are stored locally. Docker images are pulled only when a
 selected task is run.

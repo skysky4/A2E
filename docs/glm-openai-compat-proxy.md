@@ -1,6 +1,7 @@
 # GLM OpenAI compatibility proxy
 
-`scripts/glm_openai_compat_proxy.py` is a loopback-only reverse proxy for the
+`ageneval-model-gateway` owns the GLM compatibility middleware.
+`scripts/glm_openai_compat_proxy.py` remains a thin, stdlib-only CLI wrapper for the
 `glm-5.3` Chat Completions compatibility issues observed in A2E tool-calling
 runs. It does not store or log request bodies, prompts, or credentials.
 
@@ -29,6 +30,10 @@ export OPENAI_API_BASE=http://127.0.0.1:8011/v1
 
 The client continues to send its normal `Authorization` header. The proxy
 forwards it without logging it.
+
+Campaign runs normally do not start this script manually. A model profile with
+`middleware: [glm_tool_call_compat]` starts one loopback instance for the
+Campaign, health-checks it, and shuts it down with the Controller.
 
 Health and counters are available locally:
 

@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 # (task, sandbox) -> None; (task, sandbox, model_patch) -> report dict
 SetupFn = Callable[[TaskInput, "SandboxEnvironment"], None]
 ScoreFn = Callable[[TaskInput, "SandboxEnvironment", str], Mapping[str, Any]]
+LifecycleHook = Callable[[str], Awaitable[None]]
 
 
 @dataclass
@@ -50,6 +51,7 @@ class SandboxScoringRunner(AgentRunner):
     score_fn: ScoreFn
     setup_fn: SetupFn | None = None
     patch_cmd: Sequence[str] = ("git", "diff")
+    lifecycle_hook: LifecycleHook | None = None
     name: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -70,7 +72,11 @@ class SandboxScoringRunner(AgentRunner):
                 error="sandbox dataset task is missing a 'sandbox' spec",
             )
 
+        environment_started = False
         try:
+            if self.lifecycle_hook is not None:
+                await self.lifecycle_hook("ENVIRONMENT_START")
+            environment_started = True
             with sandbox_session(spec) as sb:
                 if self.setup_fn is not None:
                     self.setup_fn(task, sb)
@@ -80,13 +86,21 @@ class SandboxScoringRunner(AgentRunner):
                 )
                 agent_timeout = task.metadata.get("agent_timeout_sec")
                 try:
-                    if agent_timeout is None:
-                        trace = await self.inner.run(inner_task)
-                    else:
-                        timeout = float(agent_timeout)
-                        if timeout <= 0:
-                            raise ValueError("agent_timeout_sec must be positive")
-                        trace = await asyncio.wait_for(self.inner.run(inner_task), timeout=timeout)
+                    if self.lifecycle_hook is not None:
+                        await self.lifecycle_hook("AGENT_START")
+                    try:
+                        if agent_timeout is None:
+                            trace = await self.inner.run(inner_task)
+                        else:
+                            timeout = float(agent_timeout)
+                            if timeout <= 0:
+                                raise ValueError("agent_timeout_sec must be positive")
+                            trace = await asyncio.wait_for(
+                                self.inner.run(inner_task), timeout=timeout
+                            )
+                    finally:
+                        if self.lifecycle_hook is not None:
+                            await self.lifecycle_hook("AGENT_END")
                 except asyncio.TimeoutError:
                     logger.warning("agent timed out on %s after %ss", task.task_id, agent_timeout)
                     trace = TaskTrace(
@@ -100,6 +114,8 @@ class SandboxScoringRunner(AgentRunner):
                     )
                 model_patch = sb.exec(list(self.patch_cmd)).stdout
                 try:
+                    if self.lifecycle_hook is not None:
+                        await self.lifecycle_hook("VERIFICATION_START")
                     # Verifiers execute synchronous sandbox commands and may run
                     # for many minutes.  Running one directly on the asyncio event
                     # loop freezes every other task: agent deadlines cannot fire
@@ -119,6 +135,9 @@ class SandboxScoringRunner(AgentRunner):
                 except Exception as exc:  # scoring must not crash the run
                     logger.exception("scorer failed on %s", task.task_id)
                     report = {"resolved": False, "score_error": str(exc)[:500]}
+                finally:
+                    if self.lifecycle_hook is not None:
+                        await self.lifecycle_hook("VERIFICATION_END")
         except Exception as exc:  # sandbox provisioning failure
             logger.exception("sandbox failed on %s", task.task_id)
             return TaskTrace(
@@ -129,6 +148,9 @@ class SandboxScoringRunner(AgentRunner):
                 elapsed_seconds=time.perf_counter() - start,
                 error=f"sandbox error: {exc}"[:1000],
             )
+        finally:
+            if environment_started and self.lifecycle_hook is not None:
+                await self.lifecycle_hook("ENVIRONMENT_END")
 
         raw = {**dict(trace.raw), "model_patch": model_patch, **report}
         return replace(

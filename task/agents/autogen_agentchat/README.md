@@ -38,6 +38,11 @@ uv sync --index-strategy unsafe-best-match
 uv run python -m ...   # within this isolated environment
 ```
 
+The standalone lock also includes the task benchmark adapters, Model Gateway,
+and evaluator helpers used by `run_campaign.py`. The main Campaign Controller
+delegates AutoGen Trials to this interpreter and keeps their global resource
+permits in the main process.
+
 The `autogen-agentchat` entry in `task/runners/registry.py` carries
 `"isolated": True`. Building it from the main workspace `.venv` raises a clear
 `RuntimeError` pointing here.

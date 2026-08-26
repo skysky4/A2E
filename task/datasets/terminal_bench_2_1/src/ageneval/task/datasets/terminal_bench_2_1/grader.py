@@ -21,10 +21,12 @@ binary directory with ``A2E_TB21_UV_BIN_DIR`` when needed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -163,11 +165,60 @@ def _copy_tests_into_container(tests_dir: Path, sandbox) -> tuple[int, bool]:
     return count, bootstrap_rewritten
 
 
-def _parse_ctrf(sandbox) -> tuple[dict[str, Any], str | None]:
-    """Best-effort parse of CTRF counts and retain the failure reason."""
+def _persist_ctrf_artifact(raw: bytes) -> dict[str, Any] | None:
+    """Atomically preserve the exact verifier bytes in the Trial attempt.
+
+    The orchestrator supplies ``A2E_TRIAL_ATTEMPT_DIR`` to isolated Trial
+    processes.  Keeping this helper environment-driven avoids coupling the
+    dataset package to Campaign classes and still lets direct grader callers
+    run without an artifact directory.
+    """
+    attempt_dir = os.environ.get("A2E_TRIAL_ATTEMPT_DIR")
+    if not attempt_dir:
+        return None
+    target = Path(attempt_dir).resolve() / "verifier" / "ctrf.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=".ctrf.json.", suffix=".tmp", dir=target.parent
+    )
     try:
-        raw = sandbox.read_file("/logs/verifier/ctrf.json", text=True)
-        summary = (json.loads(raw).get("results") or {}).get("summary") or {}
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return {
+        "path": "verifier/ctrf.json",
+        "size_bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _parse_ctrf(sandbox) -> tuple[dict[str, Any], str | None]:
+    """Preserve the raw CTRF, then parse its full payload and summary."""
+    try:
+        raw_value = sandbox.read_file("/logs/verifier/ctrf.json", text=False)
+        raw = raw_value.encode() if isinstance(raw_value, str) else raw_value
+    except Exception as exc:
+        return {}, f"{type(exc).__name__}: {exc}"[-1000:]
+
+    artifact: dict[str, Any] = {}
+    try:
+        artifact_metadata = _persist_ctrf_artifact(raw)
+        if artifact_metadata is not None:
+            artifact["tb_ctrf_artifact"] = artifact_metadata
+    except Exception as exc:
+        artifact["tb_ctrf_artifact_error"] = f"{type(exc).__name__}: {exc}"[-1000:]
+        return artifact, artifact["tb_ctrf_artifact_error"]
+
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("CTRF root must be an object")
+        summary = (parsed.get("results") or {}).get("summary") or {}
         counts = {
             "tb_tests_total": summary.get("tests"),
             "tb_tests_passed": summary.get("passed"),
@@ -175,12 +226,9 @@ def _parse_ctrf(sandbox) -> tuple[dict[str, Any], str | None]:
         }
         if any(not isinstance(value, int) for value in counts.values()):
             raise ValueError(f"CTRF summary has invalid counts: {counts}")
-        return (
-            counts,
-            None,
-        )
+        return ({**artifact, "tb_ctrf": parsed, **counts}, None)
     except Exception as exc:
-        return {}, f"{type(exc).__name__}: {exc}"[-1000:]
+        return artifact, f"{type(exc).__name__}: {exc}"[-1000:]
 
 
 def score_terminal_bench_2_1(task: TaskInput, sandbox, model_patch: str) -> dict[str, Any]:

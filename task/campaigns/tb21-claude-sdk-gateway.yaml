@@ -1,0 +1,42 @@
+schema_version: 1
+name: tb21-claude-sdk-gateway
+
+models:
+  - glm-5.3
+  - gpt-5.6-sol
+
+benchmarks:
+  - id: terminal-bench-2.1
+    sample:
+      n: 2
+      seed: 20260822
+      exclude_categories:
+        - security
+    graders:
+      - id: terminal-bench
+        mode: inline
+        required: true
+
+harnesses:
+  - langgraph
+  - openai-agents
+  - claude-sdk
+
+repetitions: 1
+matrix:
+  exclude: []
+
+execution:
+  n_concurrent_trials: 8
+  n_active_cells: 4
+  n_concurrent_sandboxes: 2
+  n_concurrent_graders: 2
+  n_concurrent_uploads: 2
+  queue_capacity: 16
+  cancellation_grace_seconds: 30
+  timeout_seconds: null
+  retry:
+    max_retries: 0
+
+artifacts:
+  retain: failures

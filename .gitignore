@@ -51,6 +51,8 @@ ui/dist/
 .a2e-data/
 .a2e-data*
 .a2e-*
+task/runs/*
+!task/runs/.gitkeep
 *.db
 
 # Claude Code / project-unrelated tooling state

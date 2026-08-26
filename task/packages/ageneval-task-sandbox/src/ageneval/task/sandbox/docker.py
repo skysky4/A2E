@@ -14,9 +14,10 @@ import os
 import shlex
 import subprocess
 import tempfile
+from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
-from typing import Mapping, Sequence
 
+from ageneval.task.sandbox.activity import emit_activity
 from ageneval.task.sandbox.environment import ExecResult, SandboxEnvironment
 from ageneval.task.sandbox.registry import sandboxenv
 
@@ -25,6 +26,12 @@ logger = logging.getLogger(__name__)
 # Docker label stamped on every A2E-created sandbox container so the leak-sweep
 # (cleanup.sweep_sandbox_containers) can identify and remove only our containers.
 A2E_SANDBOX_LABEL = "a2e.sandbox=1"
+A2E_SCOPE_ENV_LABELS = {
+    "A2E_CAMPAIGN_ID": "a2e.campaign_id",
+    "A2E_CELL_ID": "a2e.cell_id",
+    "A2E_TRIAL_ID": "a2e.trial_id",
+    "A2E_ATTEMPT": "a2e.attempt",
+}
 
 # In-container timeout exit codes (coreutils `timeout`): 124 hard, 137 SIGKILL.
 _TIMEOUT_CODES = (124, 137, 143)
@@ -90,6 +97,10 @@ class DockerSandboxEnvironment(SandboxEnvironment):
         # (see cleanup.sweep_sandbox_containers). Belt-and-suspenders on top of
         # the per-container ``--rm`` + cleanup() finally.
         run_cmd = ["docker", "run", "-d", "--rm", "--label", A2E_SANDBOX_LABEL]
+        for env_name, label_name in A2E_SCOPE_ENV_LABELS.items():
+            value = os.environ.get(env_name)
+            if value:
+                run_cmd += ["--label", f"{label_name}={value}"]
         if self.user:
             run_cmd += ["--user", self.user]
         if self.entrypoint:
@@ -191,6 +202,8 @@ class DockerSandboxEnvironment(SandboxEnvironment):
 # ── docker CLI helpers ──────────────────────────────────────────────────────
 def _run(cmd: list[str], *, input: str | None = None, timeout: int | None = None) -> ExecResult:
     """Run a host docker CLI command, capturing output (never raises on nonzero)."""
+    kind = f"docker:{cmd[1]}" if len(cmd) > 1 and cmd[0] == "docker" else "docker:command"
+    emit_activity(kind, "start")
     try:
         proc = subprocess.run(
             cmd, input=input, capture_output=True, text=True, timeout=timeout
@@ -199,7 +212,10 @@ def _run(cmd: list[str], *, input: str | None = None, timeout: int | None = None
         return ExecResult(False, 124, exc.stdout or "", f"host timeout after {timeout}s: {shlex.join(cmd)}")
     except FileNotFoundError as exc:
         return ExecResult(False, 127, "", str(exc))
-    return ExecResult(proc.returncode == 0, proc.returncode, proc.stdout, proc.stderr)
+    else:
+        return ExecResult(proc.returncode == 0, proc.returncode, proc.stdout, proc.stderr)
+    finally:
+        emit_activity(kind, "end")
 
 
 def _docker_available() -> bool:

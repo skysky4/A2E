@@ -20,6 +20,9 @@ version = "0.1.0"
 description = "A2E — Agent Evaluation Platform (Shanghai AI Lab)"
 requires-python = ">=3.10,<3.15"
 readme = "README.md"
+dependencies = [
+  "ageneval-task-orchestrator>=0.1.0",
+]
 
 [tool.uv]
 required-version = ">=0.10.9"
@@ -69,6 +72,8 @@ members = [
   "../server/packages/a2e-otel",
   "packages/ageneval-task-core",
   "packages/ageneval-task-sandbox",
+  "packages/ageneval-model-gateway",
+  "packages/ageneval-task-orchestrator",
   "datasets/tau_bench",
   "datasets/tau2",
   "datasets/tau3",
@@ -119,6 +124,8 @@ a2e-otel = { workspace = true }
 # task packages
 ageneval-task-core = { workspace = true }
 ageneval-task-sandbox = { workspace = true }
+ageneval-model-gateway = { workspace = true }
+ageneval-task-orchestrator = { workspace = true }
 ageneval-task-tau-bench = { workspace = true }
 ageneval-task-tau2 = { workspace = true }
 ageneval-task-tau3 = { workspace = true }
@@ -184,5 +191,6 @@ skip_empty = true
 
 [dependency-groups]
 dev = [
+    "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.1.0",
 ]

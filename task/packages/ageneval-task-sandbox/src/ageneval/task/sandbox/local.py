@@ -8,12 +8,12 @@ sandbox use where pulling a docker image is undesirable. Modelled on inspect_ai'
 from __future__ import annotations
 
 import logging
-import shutil
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
+from ageneval.task.sandbox.activity import emit_activity
 from ageneval.task.sandbox.environment import ExecResult, SandboxEnvironment
 from ageneval.task.sandbox.registry import sandboxenv
 
@@ -54,6 +54,7 @@ class LocalSandboxEnvironment(SandboxEnvironment):
         timeout: int | None = None,
     ) -> ExecResult:
         run_cwd = self._resolve(cwd) if cwd else self._workdir
+        emit_activity("local:exec", "start")
         try:
             proc = subprocess.run(
                 cmd,
@@ -68,7 +69,10 @@ class LocalSandboxEnvironment(SandboxEnvironment):
             return ExecResult(False, 124, exc.stdout or "", f"timeout after {timeout}s")
         except FileNotFoundError as exc:
             return ExecResult(False, 127, "", str(exc))
-        return ExecResult(proc.returncode == 0, proc.returncode, proc.stdout, proc.stderr)
+        else:
+            return ExecResult(proc.returncode == 0, proc.returncode, proc.stdout, proc.stderr)
+        finally:
+            emit_activity("local:exec", "end")
 
     def write_file(self, path: str, contents: str | bytes) -> None:
         target = Path(self._resolve(path))

@@ -462,16 +462,26 @@ def _build_autogen(*, binding: Any, **kw: Any):
     return AutogenAgentChatAgent(binding=binding, **{k: v for k, v in kw.items() if k in accepted})
 
 
+_OPENAI_REQUIREMENTS = {
+    "protocols": ["openai_chat_completions"],
+    "capabilities": {"tools": True},
+}
+_ANTHROPIC_REQUIREMENTS = {
+    "protocols": ["anthropic_messages"],
+    "capabilities": {"tools": True},
+}
+
+
 AGENTS: Dict[str, Dict[str, Any]] = {
-    "langgraph":     {"build": _build_langgraph,     "framework": "langchain",     "supports_any_binding": True},
-    "claude-sdk":    {"build": _build_claude_sdk,    "framework": "anthropic",     "supports_any_binding": True},
-    "smolagents":    {"build": _build_smolagents,    "framework": "smolagents",    "supports_any_binding": True},
-    "openai-agents": {"build": _build_openai_agents, "framework": "openai_agents", "supports_any_binding": True},
-    "google-adk":    {"build": _build_google_adk,    "framework": "google_adk",    "supports_any_binding": True},
-    "agno":          {"build": _build_agno,          "framework": "agno",          "supports_any_binding": True},
-    "llama-index":   {"build": _build_llama_index,   "framework": "llama_index",   "supports_any_binding": True},
-    "crewai":        {"build": _build_crewai,        "framework": "crewai",        "supports_any_binding": True},
-    "autogen-agentchat": {"build": _build_autogen,   "framework": "autogen_agentchat", "supports_any_binding": True, "isolated": True},
+    "langgraph":     {"build": _build_langgraph,     "framework": "langchain",     "supports_any_binding": True, "requirements": _OPENAI_REQUIREMENTS},
+    "claude-sdk":    {"build": _build_claude_sdk,    "framework": "anthropic",     "supports_any_binding": True, "requirements": _ANTHROPIC_REQUIREMENTS},
+    "smolagents":    {"build": _build_smolagents,    "framework": "smolagents",    "supports_any_binding": True, "requirements": _OPENAI_REQUIREMENTS},
+    "openai-agents": {"build": _build_openai_agents, "framework": "openai_agents", "supports_any_binding": True, "requirements": _OPENAI_REQUIREMENTS},
+    "google-adk":    {"build": _build_google_adk,    "framework": "google_adk",    "supports_any_binding": True, "requirements": _OPENAI_REQUIREMENTS},
+    "agno":          {"build": _build_agno,          "framework": "agno",          "supports_any_binding": True, "requirements": _OPENAI_REQUIREMENTS},
+    "llama-index":   {"build": _build_llama_index,   "framework": "llama_index",   "supports_any_binding": True, "requirements": _OPENAI_REQUIREMENTS},
+    "crewai":        {"build": _build_crewai,        "framework": "crewai",        "supports_any_binding": True, "requirements": _OPENAI_REQUIREMENTS},
+    "autogen-agentchat": {"build": _build_autogen,   "framework": "autogen_agentchat", "supports_any_binding": True, "isolated": True, "requirements": _OPENAI_REQUIREMENTS},
 }
 
 
@@ -798,6 +808,7 @@ def list_registries() -> Dict[str, Any]:
                 "framework": meta.get("framework", "none"),
                 "group": _AGENT_GROUP.get(name, "Agent-first frameworks"),
                 "isolated": bool(meta.get("isolated", False)),
+                "requirements": meta.get("requirements", {}),
             }
             for name, meta in AGENTS.items()
         },

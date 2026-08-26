@@ -3,8 +3,8 @@ revision = 3
 requires-python = ">=3.12, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13' and sys_platform == 'win32'",
-    "python_full_version < '3.13' and sys_platform == 'win32'",
     "python_full_version >= '3.13' and sys_platform != 'win32'",
+    "python_full_version < '3.13' and sys_platform == 'win32'",
     "python_full_version < '3.13' and sys_platform != 'win32'",
 ]
 
@@ -15,6 +15,7 @@ members = [
     "a2e-otel",
     "a2e-server",
     "ageneval-a2e",
+    "ageneval-model-gateway",
     "ageneval-task-agent-agno",
     "ageneval-task-agent-crewai",
     "ageneval-task-agent-google-adk",
@@ -29,6 +30,7 @@ members = [
     "ageneval-task-humaneval",
     "ageneval-task-langgraph-agent",
     "ageneval-task-mmlu",
+    "ageneval-task-orchestrator",
     "ageneval-task-persistbench",
     "ageneval-task-qa-suite",
     "ageneval-task-runners",
@@ -518,16 +520,39 @@ wheels = [
 name = "ageneval-a2e"
 version = "0.1.0"
 source = { virtual = "." }
+dependencies = [
+    { name = "ageneval-task-orchestrator" },
+]
 
 [package.dev-dependencies]
 dev = [
+    { name = "pytest-asyncio" },
     { name = "pytest-cov" },
 ]
 
 [package.metadata]
+requires-dist = [{ name = "ageneval-task-orchestrator", editable = "packages/ageneval-task-orchestrator" }]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest-cov", specifier = ">=7.1.0" }]
+dev = [
+    { name = "pytest-asyncio", specifier = ">=0.24.0" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
+]
+
+[[package]]
+name = "ageneval-model-gateway"
+version = "0.1.0"
+source = { editable = "packages/ageneval-model-gateway" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+]
 
 [[package]]
 name = "ageneval-task-agent-agno"
@@ -794,6 +819,79 @@ dependencies = [
 requires-dist = [
     { name = "ageneval-task-core", editable = "packages/ageneval-task-core" },
     { name = "datasets", specifier = ">=2.14.0" },
+]
+
+[[package]]
+name = "ageneval-task-orchestrator"
+version = "0.1.0"
+source = { editable = "packages/ageneval-task-orchestrator" }
+dependencies = [
+    { name = "a2e-client" },
+    { name = "a2e-evals" },
+    { name = "ageneval-model-gateway" },
+    { name = "ageneval-task-agent-agno" },
+    { name = "ageneval-task-agent-crewai" },
+    { name = "ageneval-task-agent-google-adk" },
+    { name = "ageneval-task-agent-llama-index" },
+    { name = "ageneval-task-agent-openai-agents" },
+    { name = "ageneval-task-agent-smolagents" },
+    { name = "ageneval-task-claude-sdk-agent" },
+    { name = "ageneval-task-core" },
+    { name = "ageneval-task-deepsearchqa" },
+    { name = "ageneval-task-gdpval" },
+    { name = "ageneval-task-gsm8k" },
+    { name = "ageneval-task-humaneval" },
+    { name = "ageneval-task-langgraph-agent" },
+    { name = "ageneval-task-mmlu" },
+    { name = "ageneval-task-persistbench" },
+    { name = "ageneval-task-qa-suite" },
+    { name = "ageneval-task-runners" },
+    { name = "ageneval-task-swe-bench" },
+    { name = "ageneval-task-swe-bench-pro" },
+    { name = "ageneval-task-tau-bench" },
+    { name = "ageneval-task-tau2" },
+    { name = "ageneval-task-tau3" },
+    { name = "ageneval-task-terminal-bench-2" },
+    { name = "ageneval-task-terminal-bench-2-1" },
+    { name = "ageneval-task-traject-bench" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "a2e-client", editable = "../server/packages/a2e-client" },
+    { name = "a2e-evals", editable = "../eval/packages/a2e-evals" },
+    { name = "ageneval-model-gateway", editable = "packages/ageneval-model-gateway" },
+    { name = "ageneval-task-agent-agno", editable = "agents/agno" },
+    { name = "ageneval-task-agent-crewai", editable = "agents/crewai" },
+    { name = "ageneval-task-agent-google-adk", editable = "agents/google_adk" },
+    { name = "ageneval-task-agent-llama-index", editable = "agents/llama_index" },
+    { name = "ageneval-task-agent-openai-agents", editable = "agents/openai_agents" },
+    { name = "ageneval-task-agent-smolagents", editable = "agents/smolagents" },
+    { name = "ageneval-task-claude-sdk-agent", editable = "agents/claude_sdk" },
+    { name = "ageneval-task-core", editable = "packages/ageneval-task-core" },
+    { name = "ageneval-task-deepsearchqa", editable = "datasets/deepsearchqa" },
+    { name = "ageneval-task-gdpval", editable = "datasets/gdpval" },
+    { name = "ageneval-task-gsm8k", editable = "datasets/gsm8k" },
+    { name = "ageneval-task-humaneval", editable = "datasets/humaneval" },
+    { name = "ageneval-task-langgraph-agent", editable = "agents/langgraph" },
+    { name = "ageneval-task-mmlu", editable = "datasets/mmlu" },
+    { name = "ageneval-task-persistbench", editable = "datasets/persistbench" },
+    { name = "ageneval-task-qa-suite", editable = "datasets/qa_suite" },
+    { name = "ageneval-task-runners", editable = "runners" },
+    { name = "ageneval-task-swe-bench", editable = "datasets/swe_bench" },
+    { name = "ageneval-task-swe-bench-pro", editable = "datasets/swe_bench_pro" },
+    { name = "ageneval-task-tau-bench", editable = "datasets/tau_bench" },
+    { name = "ageneval-task-tau2", editable = "datasets/tau2" },
+    { name = "ageneval-task-tau3", editable = "datasets/tau3" },
+    { name = "ageneval-task-terminal-bench-2", editable = "datasets/terminal_bench_2" },
+    { name = "ageneval-task-terminal-bench-2-1", editable = "datasets/terminal_bench_2_1" },
+    { name = "ageneval-task-traject-bench", editable = "datasets/traject_bench" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [[package]]
