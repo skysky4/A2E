@@ -12,7 +12,7 @@ license = { text = "MIT" }
 readme = "README.md"
 dependencies = [
     "ageneval-task-core>=0.1.0",
-    "openinference-instrumentation-crewai==0.1.16",
+    "openinference-instrumentation-crewai==1.1.14",
     # Keep CrewAI aligned with the instrumentation package's supported range.
     "crewai>=1.10.1",
     "openai>=1.0.0",

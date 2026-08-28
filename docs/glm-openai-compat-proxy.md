@@ -57,28 +57,24 @@ task/.venv/bin/python -m ruff check \
 The end-to-end test opens temporary loopback sockets, so it may need local
 network permission in a sandboxed development environment.
 
-## Full Terminal-Bench 2.1 run
+## Terminal-Bench 2.1 Campaigns
 
-Run the eight OpenAI-compatible agents sequentially with GLM-5.3. Each agent
-uses task concurrency 32; keeping the agents sequential caps total benchmark
-concurrency at 32 rather than 256:
-
-```bash
-bash scripts/run_tb21_glm53_8_agents.sh
-```
-
-The default is the 81-task non-security split. Include all 89 tasks explicitly:
+Use the unified Campaign wrapper for TB2.1 runs. Model gateway middleware now
+applies GLM tool-call compatibility inside each Campaign, while the wrapper
+owns the A2E Server and SQLite lifecycle:
 
 ```bash
-bash scripts/run_tb21_glm53_8_agents.sh --include-security
+scripts/run_campaign.sh \
+  --config task/campaigns/tb21-crewai-smolagents-gpt56-glm53.yaml
 ```
 
-The script shares one compatibility proxy but starts and stops A2E separately
-for each agent. Every agent therefore gets an independent `<agent>/a2e.db`,
-server log, runner log, and proxy-metrics snapshot under
-`.a2e-tb2.1-glm-5.3-result/`. Use `--dry-run` to inspect the commands. Set
-`TB21_RUN_ROOT` to an existing run directory to resume; agents with a `DONE`
-marker are skipped.
+Concurrency is controlled by the Campaign YAML rather than by a dedicated
+model or harness shell script. Resume the immutable task selection with:
+
+```bash
+scripts/run_campaign.sh \
+  --resume task/runs/campaign-c19e7e74248264ab
+```
 
 ## Scope
 

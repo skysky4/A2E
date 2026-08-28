@@ -46,21 +46,25 @@ port. Profiles without a `gateway` block connect directly from the Harness.
 ## Run and recover
 
 ```bash
-cd task
-uv sync --frozen
+cd /path/to/A2E
 
-uv run python examples/run_campaign.py \
-  --config campaigns/example.yaml --dry-run
-uv run python examples/run_campaign.py \
-  --config campaigns/example.yaml
+scripts/run_campaign.sh \
+  --config task/campaigns/example.yaml --dry-run
+scripts/run_campaign.sh \
+  --config task/campaigns/example.yaml
 
-uv run python examples/run_campaign.py \
-  --resume runs/<campaign-id>
-uv run python examples/run_campaign.py \
-  --resume runs/<campaign-id> --rerun-failed
-uv run python examples/run_campaign.py \
-  --regrade runs/<campaign-id> --grader exact_match
+scripts/run_campaign.sh \
+  --resume task/runs/<campaign-id>
+scripts/run_campaign.sh \
+  --resume task/runs/<campaign-id> --rerun-failed
+scripts/run_campaign.sh \
+  --regrade task/runs/<campaign-id> --grader exact_match
 ```
+
+The wrapper loads the repository `.env`, starts an isolated A2E Server backed
+by `.a2e-campaigns/<campaign-id>/a2e.db`, waits for readiness, runs the
+Campaign, and stops the Server on exit. Pass `--database`, `--http-port`, or
+`--grpc-port` to override those defaults. A dry run does not start the Server.
 
 The first command materializes the exact sample selection and matrix in
 `runs/<campaign-id>/config.json` and `lock.json` without contacting the A2E

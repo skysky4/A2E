@@ -1,0 +1,47 @@
+schema_version: 1
+name: tb21-crewai-smolagents-claude-sdk-gpt56-glm53-81x32
+
+models:
+  - glm-5.3
+  - gpt-5.6-sol
+
+benchmarks:
+  - id: terminal-bench-2.1
+    sample:
+      n: 81
+      seed: 20260817
+      exclude_categories:
+        - security
+    graders:
+      - id: terminal-bench
+        mode: inline
+        required: true
+
+harnesses:
+  - crewai
+  - smolagents
+  - claude-sdk
+
+repetitions: 1
+
+matrix:
+  exclude: []
+
+execution:
+  n_concurrent_trials: 32
+  n_active_cells: 6
+  n_concurrent_model_sessions: 32
+  n_concurrent_sandboxes: 32
+  n_concurrent_graders: 32
+  n_concurrent_uploads: 32
+  queue_capacity: 64
+  timeout_seconds: null
+  cancellation_grace_seconds: 30
+  retry:
+    max_retries: 1
+    min_wait_seconds: 2
+    max_wait_seconds: 30
+    multiplier: 2
+
+artifacts:
+  retain: failures

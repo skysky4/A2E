@@ -4,8 +4,8 @@ provider: zai
 model: glm-5.3
 upstream_protocol: openai_chat_completions
 connection:
-  base_url_env: GLM_API_BASE
-  api_key_env: GLM_API_KEY
+  base_url_env: OPENAI_API_BASE
+  api_key_env: OPENAI_API_KEY
 capabilities:
   tools: true
   streaming: true

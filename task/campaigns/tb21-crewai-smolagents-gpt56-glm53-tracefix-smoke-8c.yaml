@@ -1,0 +1,46 @@
+schema_version: 1
+name: tb21-crewai-smolagents-gpt56-glm53-tracefix-smoke-8c
+
+models:
+  - glm-5.3
+  - gpt-5.6-sol
+
+benchmarks:
+  - id: terminal-bench-2.1
+    sample:
+      n: 2
+      seed: 20260826
+      task_ids:
+        - fix-git
+        - regex-log
+      exclude_categories:
+        - security
+    graders:
+      - id: terminal-bench
+        mode: inline
+        required: true
+
+harnesses:
+  - crewai
+  - smolagents
+
+repetitions: 1
+
+matrix:
+  exclude: []
+
+execution:
+  n_concurrent_trials: 8
+  n_active_cells: 4
+  n_concurrent_model_sessions: 8
+  n_concurrent_sandboxes: 8
+  n_concurrent_graders: 8
+  n_concurrent_uploads: 8
+  queue_capacity: 16
+  timeout_seconds: null
+  cancellation_grace_seconds: 30
+  retry:
+    max_retries: 0
+
+artifacts:
+  retain: all

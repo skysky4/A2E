@@ -54,6 +54,9 @@ ui/dist/
 task/runs/*
 !task/runs/.gitkeep
 *.db
+*.db-shm
+*.db-wal
+/outputs/
 
 # Claude Code / project-unrelated tooling state
 .omc/

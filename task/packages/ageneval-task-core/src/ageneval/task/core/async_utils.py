@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 from collections.abc import Callable
 from typing import Any, TypeVar
@@ -27,10 +28,13 @@ async def run_sync_in_daemon_thread(
     Frameworks without a native async API are instead isolated in a daemon
     thread. Cancellation still cannot interrupt third-party synchronous code,
     but the abandoned worker no longer blocks loop or interpreter shutdown.
+    The caller's context variables are copied so tracing and other request-local
+    state remain attached to the same logical operation in the worker thread.
     """
 
     loop = asyncio.get_running_loop()
     future: asyncio.Future[T] = loop.create_future()
+    context = contextvars.copy_context()
 
     def set_result(value: T) -> None:
         if not future.done():
@@ -42,7 +46,7 @@ async def run_sync_in_daemon_thread(
 
     def worker() -> None:
         try:
-            value = func(*args, **kwargs)
+            value = context.run(func, *args, **kwargs)
         except BaseException as exc:
             try:
                 loop.call_soon_threadsafe(set_exception, exc)

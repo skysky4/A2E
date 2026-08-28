@@ -4,7 +4,7 @@ provider: openai-compatible
 model: gpt-5.6-sol
 upstream_protocol: openai_chat_completions
 connection:
-  base_url_env: GPT56_API_BASE
+  base_url_env: OPENAI_API_BASE
   api_key_env: OPENAI_API_KEY
 capabilities:
   tools: true
