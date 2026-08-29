@@ -26,9 +26,14 @@ There is no exact-match ground truth.
 ```bash
 cd task
 uv run python examples/run_experiment.py \
-    --dataset gdpval --agent agno --model qwen-max \
+    --dataset gdpval-aa --agent agno --model qwen-max \
     --evaluators llm_judge --n 3
 ```
 
 Change the model via `--model` / `A2E_MODEL`; the API endpoint via
 `OPENAI_API_BASE` + `OPENAI_API_KEY` (see repo `.env`).
+
+Optional locals (otherwise the loader uses the HuggingFace cache / Hub):
+
+- `A2E_GDPVAL_FILES_DIR` — extracted reference files (default `~/.cache/a2e/gdpval-files`)
+- `A2E_GDPVAL_PARQUET` — path to a local `openai/gdpval` parquet

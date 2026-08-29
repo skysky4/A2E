@@ -12,6 +12,7 @@ license = { text = "MIT" }
 readme = "README.md"
 dependencies = [
     "ageneval-task-core>=0.1.0",
+    "ageneval-task-tau-bench>=0.1.0",
 ]
 
 # τ³-bench tasks are vendored (a small real text-task sample extracted from the

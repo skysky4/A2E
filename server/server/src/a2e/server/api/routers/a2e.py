@@ -337,7 +337,7 @@ _HTML_PAGE = """<!DOCTYPE html>
     <div class="card">
       <h2>② LLM endpoint (optional)</h2>
       <div class="row"><label>Model</label><input id="model" value="qwen-plus" placeholder="e.g. qwen-plus, qwen-max (non-reasoning instruct model)" /></div>
-      <div class="row"><label>OPENAI_API_BASE</label><input id="api_base" value="http://35.220.164.252:3888/v1/" placeholder="http://.../v1/" /></div>
+      <div class="row"><label>OPENAI_API_BASE</label><input id="api_base" value="" placeholder="https://api.openai.com/v1/" /></div>
       <div class="row"><label>OPENAI_API_KEY</label><input id="api_key" type="password" placeholder="sk-… (paste your key here)" /></div>
       <div class="info-box">
         Any OpenAI-compatible endpoint works for the <b>langgraph</b> agent.

@@ -11,9 +11,9 @@ def build_humaneval_binding() -> AgentBinding:
         tool_schemas=(),
         tool_executor=lambda *_, **__: {},
         system_prompt_builder=lambda _: (
-            "You are a senior Python engineer. Complete the function so it passes the "
-            "hidden tests. Return a SINGLE JSON object with the function body (no "
-            "imports, no markdown fence):\n"
-            '  {"final_answer": "    # your code here"}'
+            "You are a senior Python engineer. Complete the function so it passes "
+            "the hidden unit tests. Reply with the Python implementation only "
+            "(function body or a full def). Markdown fences are allowed. "
+            "Do not explain the code."
         ),
     )

@@ -33,6 +33,7 @@ name = "ageneval-task-core"
 version = "0.1.0"
 source = { directory = "../../packages/ageneval-task-core" }
 dependencies = [
+    { name = "ageneval-task-sandbox" },
     { name = "openinference-instrumentation" },
     { name = "openinference-semantic-conventions" },
     { name = "opentelemetry-api" },
@@ -42,15 +43,21 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "arize-phoenix-client", marker = "extra == 'phoenix'", editable = "../../../eval/packages/phoenix-client" },
-    { name = "arize-phoenix-evals", marker = "extra == 'phoenix'", editable = "../../../eval/packages/phoenix-evals" },
+    { name = "a2e-client", marker = "extra == 'a2e'", editable = "../../../server/packages/a2e-client" },
+    { name = "a2e-evals", marker = "extra == 'a2e'", editable = "../../../eval/packages/a2e-evals" },
+    { name = "ageneval-task-sandbox", editable = "../../packages/ageneval-task-sandbox" },
     { name = "openinference-instrumentation", editable = "../../../monitor/openinference-instrumentation" },
     { name = "openinference-semantic-conventions", editable = "../../../monitor/openinference-semantic-conventions" },
     { name = "opentelemetry-api", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.20.0" },
     { name = "opentelemetry-sdk", specifier = ">=1.20.0" },
 ]
-provides-extras = ["phoenix"]
+provides-extras = ["a2e"]
+
+[[package]]
+name = "ageneval-task-sandbox"
+version = "0.1.0"
+source = { editable = "../../packages/ageneval-task-sandbox" }
 
 [[package]]
 name = "aiofiles"

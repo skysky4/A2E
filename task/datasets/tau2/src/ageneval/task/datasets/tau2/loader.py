@@ -29,13 +29,24 @@ class Tau2Dataset(Dataset):
         return len(self.tasks)
 
 
+_LIVE_DOMAINS = frozenset({"retail", "airline"})
+
+
 def load_tau2_tasks(
-    *, n: int | None = None, split: str = "test", domain: str | None = None
+    *, n: int | None = None, split: str = "test", domain: str | None = "retail"
 ) -> Tau2Dataset:
-    """Load τ²-bench tasks (full real set; optional ``domain`` filter; ``n`` caps)."""
+    """Load τ²-bench tasks.
+
+    Default ``domain='retail'``. The live tool environment only implements
+    retail/airline; telecom/mock tasks would otherwise be paired with the
+    retail wiki (the original domain-mismatch bug).
+    """
     rows = VENDOR_TASKS
-    if domain:
-        rows = [t for t in rows if t.get("domain") == domain]
+    resolved = domain or "retail"
+    if resolved == "all":
+        rows = [t for t in rows if t.get("domain") in _LIVE_DOMAINS]
+    else:
+        rows = [t for t in rows if t.get("domain") == resolved]
     rows = rows[: (n or len(rows))]
     tasks = [
         TaskInput(
@@ -53,5 +64,5 @@ def load_tau2_tasks(
         )
         for i, t in enumerate(rows)
     ]
-    logger.info("τ²-bench loader: %d tasks (domain=%s)", len(tasks), domain or "all")
+    logger.info("τ²-bench loader: %d tasks (domain=%s)", len(tasks), resolved)
     return Tau2Dataset(name="tau2", tasks=tasks)

@@ -10,6 +10,7 @@ only if HuggingFace is unreachable.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
@@ -45,7 +46,15 @@ def _fmt_memories(mem) -> str:
 def load_persistbench_tasks(
     *, hf_id: str | None = _HF_ID, split: str | None = None, n: int | None = None, config: str | None = None
 ) -> PersistBenchDataset:
-    """Load PersistBench (full set across its three published splits; ``n`` caps)."""
+    """Load PersistBench.
+
+    Official HF rows have memories but **no gold answer**, so ``substring``
+    is always 0. Default to the vendored tasks (which have gold). Set
+    ``A2E_PERSIST_HF=1`` to force the Hugging Face dump (then use llm_judge).
+    """
+    if os.environ.get("A2E_PERSIST_HF", "0") != "1":
+        logger.info("persistbench: using vendor tasks (set A2E_PERSIST_HF=1 for HF)")
+        return _load_vendor(n=n)
     if hf_id:
         try:
             from datasets import load_dataset

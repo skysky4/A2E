@@ -16,7 +16,7 @@ from typing import Any, Iterator, Sequence
 
 from ageneval.task.core.dataset import Dataset, TaskInput
 
-from ageneval.task.datasets.qa_suite.benchmarks import BENCHMARKS, QABenchmark
+from ageneval.task.datasets.qa_suite.benchmarks import BBH_CONFIGS, BENCHMARKS, QABenchmark
 
 logger = logging.getLogger(__name__)
 
@@ -142,41 +142,86 @@ def load_qa_tasks(
     """
     cfg = BENCHMARKS[benchmark]
     use_split = split or cfg.split
-    ds = _load_hf(cfg.hf_id, cfg.hf_config, use_split)
-
     tasks: list[TaskInput] = []
-    for i, row in enumerate(ds):
-        if n is not None and i >= n:
-            break
-
-        question = str(row.get(cfg.question_field, ""))
-
-        if cfg.answer_type == "mc" and cfg.choices_field:
-            choices_raw = row.get(cfg.choices_field)
-            texts, labels = _extract_choices(choices_raw)
-            instruction = f"Question: {question}\n{_render_choices(texts)}"
-            expected = _answer_letter(cfg, row, texts, labels)
-        elif cfg.answer_type == "mc":
-            # Choices are already embedded in the question text and the answer
-            # field holds the letter directly (e.g. fingertap/GPQA-diamond).
-            instruction = f"Question: {question}"
-            expected = str(row.get(cfg.answer_field, "")).strip().upper()
-        else:
-            # numeric / freeform: answer is a plain string/number.
-            instruction = question
-            expected = str(row.get(cfg.answer_field, "")).strip()
-
-        tasks.append(
-            TaskInput(
-                task_id=f"{benchmark}-{i}",
-                instruction=instruction,
-                expected_outputs=(expected,),
-                metadata={"answer_type": cfg.answer_type, "benchmark": benchmark},
-            )
-        )
+    if benchmark == "bbh":
+        configs = _bbh_configs_to_load()
+        per_cfg = None
+        if n is not None and configs:
+            per_cfg = max(1, (n + len(configs) - 1) // len(configs))
+        for cfg_name in configs:
+            if n is not None and len(tasks) >= n:
+                break
+            try:
+                ds = _load_hf(cfg.hf_id, cfg_name, use_split)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("bbh config %s unavailable (%s)", cfg_name, str(exc)[:120])
+                continue
+            take = per_cfg if per_cfg is not None else None
+            for i, row in enumerate(ds):
+                if take is not None and i >= take:
+                    break
+                if n is not None and len(tasks) >= n:
+                    break
+                tasks.append(_row_to_task(cfg, row, f"bbh-{cfg_name}-{i}"))
+        if not tasks:
+            ds = _load_hf(cfg.hf_id, cfg.hf_config, use_split)
+            for i, row in enumerate(ds):
+                if n is not None and i >= n:
+                    break
+                tasks.append(_row_to_task(cfg, row, f"{benchmark}-{i}"))
+    else:
+        ds = _load_hf(cfg.hf_id, cfg.hf_config, use_split)
+        for i, row in enumerate(ds):
+            if n is not None and i >= n:
+                break
+            tasks.append(_row_to_task(cfg, row, f"{benchmark}-{i}"))
 
     logger.info(
         "QA Suite loader: %s (%s/%s), %s tasks",
         benchmark, cfg.hf_id, use_split, len(tasks),
     )
     return QADataset(name=f"qa-{benchmark}", tasks=tasks)
+
+
+def _bbh_configs_to_load() -> list[str]:
+    """Return BBH subsets that are actually available (cached or downloadable)."""
+    from pathlib import Path
+
+    cache = Path.home() / ".cache/huggingface/datasets/lukaemon___bbh"
+    cached = [name for name in BBH_CONFIGS if (cache / name).exists()]
+    if cached:
+        return cached
+    available: list[str] = []
+    for name in BBH_CONFIGS:
+        try:
+            _load_hf("lukaemon/bbh", name, "test")
+        except Exception:  # noqa: BLE001
+            continue
+        available.append(name)
+    return available or ["boolean_expressions"]
+
+
+def _row_to_task(cfg: QABenchmark, row: dict, task_id: str) -> TaskInput:
+    question = str(row.get(cfg.question_field, ""))
+    extra_meta = {}
+    if cfg.key == "bbh":
+        extra_meta["bbh_config"] = str(row.get("bbh_config") or "")
+
+    if cfg.answer_type == "mc" and cfg.choices_field:
+        choices_raw = row.get(cfg.choices_field)
+        texts, labels = _extract_choices(choices_raw)
+        instruction = f"Question: {question}\n{_render_choices(texts)}"
+        expected = _answer_letter(cfg, row, texts, labels)
+    elif cfg.answer_type == "mc":
+        instruction = f"Question: {question}"
+        expected = str(row.get(cfg.answer_field, "")).strip().upper()
+    else:
+        instruction = question
+        expected = str(row.get(cfg.answer_field, "")).strip()
+
+    return TaskInput(
+        task_id=task_id,
+        instruction=instruction,
+        expected_outputs=(expected,),
+        metadata={"answer_type": cfg.answer_type, "benchmark": cfg.key, **extra_meta},
+    )

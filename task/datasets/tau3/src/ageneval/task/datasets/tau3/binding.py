@@ -1,53 +1,42 @@
-"""τ³-bench binding — tool-calling agent over the TEXT (no-voice) tasks.
-
-Parallel to the τ2 binding: a JSON-action protocol plus an executor that serves
-lightweight state lookups and acknowledges every other tool. The benchmark's
-voice modality is not used — this is a pure text tool-agent-user interaction.
-"""
+"""τ³-bench binding — TEXT tasks over the live retail/airline tool environment."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any
 
 from ageneval.task.core import AgentBinding
-from ageneval.task.datasets.tau3.tools import get_tau3_tool_schemas
+from ageneval.task.datasets.tau_bench.runtime import (
+    Domain,
+    build_system_prompt,
+    execute_tool,
+    get_tool_schemas,
+)
 
-# Tool-name families that can be answered from the task's initial_state.
-_USER_TOOLS = {"find_user", "find_user_id_by_name_zip", "find_user_id_by_email", "get_user_details"}
-_ORDER_TOOLS = {"get_order_details", "find_order", "get_reservation_details"}
+
+def _resolve_domain(domain: str | None) -> Domain:
+    if domain == "airline":
+        return "airline"
+    if domain in (None, "", "retail", "all"):
+        return "retail"
+    raise ValueError(
+        f"unsupported tau3 domain {domain!r}; live tools exist for retail/airline only"
+    )
 
 
-def build_tau3_binding() -> AgentBinding:
-    """Return everything a generic agent needs to drive a τ³-bench text task."""
+def build_tau3_binding(domain: str | None = "retail") -> AgentBinding:
+    resolved = _resolve_domain(domain)
+    wiki = build_system_prompt(resolved)
     return AgentBinding(
-        name="tau3",
-        tool_schemas=get_tau3_tool_schemas(),
-        tool_executor=_tau3_tool_executor,
-        system_prompt_builder=_build_system_prompt,
+        name=f"tau3-{resolved}",
+        tool_schemas=get_tool_schemas(resolved),
+        tool_executor=_make_executor(resolved),
+        system_prompt_builder=lambda _tools, _wiki=wiki: _wiki,
     )
 
 
-def _build_system_prompt(tools: Sequence[Mapping[str, Any]]) -> str:
-    tool_block = "\n".join(
-        f"- {t['function']['name']}: {t['function'].get('description', '')}" for t in tools
-    )
-    return (
-        "You are a τ³-bench customer-support agent handling a TEXT conversation "
-        "(the benchmark's voice modality is not used here). Use the listed tools "
-        "to fulfil the user's request while following standard domain policy.\n"
-        "Reply each turn with a single JSON object: either\n"
-        '  {"action": "<tool_name>", "arguments": {...}}\n'
-        "or, when finished,\n"
-        '  {"final_answer": "<text>"}\n'
-        f"AVAILABLE TOOLS:\n{tool_block}\n"
-    )
+def _make_executor(domain: Domain):
+    def execute(name: str, arguments: Mapping[str, Any], state: Mapping[str, Any]) -> Any:
+        return execute_tool(name, arguments, state, domain=domain)
 
-
-def _tau3_tool_executor(name: str, args: Mapping[str, Any], state: Mapping[str, Any]) -> Any:
-    if name in _USER_TOOLS:
-        return state.get("user", {"ok": True, "tool": name, "echo": dict(args)})
-    if name in _ORDER_TOOLS:
-        return state.get("order") or {"ok": True, "tool": name, "echo": dict(args)}
-    # All other domain tools are acknowledged (state-free stub), as in τ2.
-    return {"ok": True, "tool": name, "echo": dict(args)}
+    return execute

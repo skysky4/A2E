@@ -33,9 +33,8 @@ def _build_system_prompt(tools: Sequence[Mapping[str, Any]]) -> str:
     return (
         "You are a traject-bench assistant. Use the listed tools to fulfil the "
         "user's request — most tasks need one or two tool calls.\n"
-        "Reply each turn with a single JSON object: either\n"
-        '  {"action": "<tool_name>", "arguments": {...}}\n'
-        "to call a tool, or, once you have the answer,\n"
-        '  {"final_answer": "<text>"}\n'
+        "Call a tool via the function-calling interface with its named arguments. "
+        "Do not emit a JSON action object as plain text. "
+        "When you have the answer, reply in plain language with the result.\n"
         f"AVAILABLE TOOLS:\n{tool_block}\n"
     )

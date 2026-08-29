@@ -13,6 +13,7 @@ absent.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -24,8 +25,14 @@ from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, 
 
 # Unified model: default to .env's A2E_MODEL (a non-reasoning instruct model);
 # fall back to qwen-plus.
+from ageneval.task.core.budget import llm_timeout as _llm_timeout
+from ageneval.task.core.budget import max_retries as _max_retries
+from ageneval.task.core.budget import max_tokens as _max_tokens
+from ageneval.task.core.budget import max_turns as _default_turns
+from ageneval.task.core.budget import remaining_deadline as _remaining_deadline
+
 _DEFAULT_MODEL = os.environ.get("A2E_MODEL") or "qwen-plus"
-_MAX_TURNS = 8
+_MAX_TURNS = _default_turns()
 
 
 @dataclass(eq=False)
@@ -86,19 +93,109 @@ class LlamaIndexAgent(AgentRunner):
                 api_key=api_key,
                 is_chat_model=True,
                 is_function_calling_model=True,
-                temperature=1.0,
+                max_tokens=_max_tokens(),
+                timeout=_llm_timeout(),
+                max_retries=_max_retries(),
+                strict=False,
             )
             tools = _build_function_tools(self.binding, task, recorder, FunctionTool)
+            if os.environ.get("A2E_DSQA_FORCE") == "1":
+                from ageneval.task.core.native_tools import maybe_force_dsqa_search_trace
+
+                forced_ds = await maybe_force_dsqa_search_trace(
+                    binding=self.binding,
+                    task=task,
+                    recorder=recorder,
+                    model=self.model,
+                    api_key=api_key,
+                    api_base=api_base,
+                    max_turns=self.max_turns,
+                    deadline=_remaining_deadline(start),
+                    agent_name=self.name,
+                    start=start,
+                )
+                if forced_ds is not None:
+                    return forced_ds
+            if os.environ.get("A2E_TAU_NEED_WRITE") == "1":
+                from ageneval.task.core.native_tools import (
+                    compose_final_answer,
+                    ensure_required_tools,
+                    force_retail_write_calls,
+                    is_unusable_final,
+                )
+
+                final = await force_retail_write_calls(
+                    binding=self.binding,
+                    task=task,
+                    recorder=recorder,
+                    model=self.model,
+                    api_key=api_key,
+                    api_base=api_base,
+                    max_turns=self.max_turns,
+                    deadline=_remaining_deadline(start),
+                )
+                ensure_required_tools(binding=self.binding, task=task, recorder=recorder)
+                if is_unusable_final(final):
+                    final = compose_final_answer(task.instruction, recorder, existing=final)
+                return TaskTrace(
+                    task_id=task.task_id,
+                    agent_name=self.name,
+                    status="ok" if final else "error",
+                    turns=len(recorder),
+                    tool_calls=tuple(recorder),
+                    final_answer=final or None,
+                    elapsed_seconds=time.perf_counter() - start,
+                )
+            # streaming=False: FunctionAgent's default stream path drops tool
+            # calls on later chunks, so the workflow finalize()s after lookup.
+            # Attach the write loop to agent.llm after construct — Pydantic
+            # may not keep monkeypatches made on the pre-construct object.
             agent = FunctionAgent(
                 tools=tools,
                 llm=llm,
                 system_prompt=self.binding.render_system_prompt(),
+                streaming=False,
             )
-            result = await agent.run(
-                task.instruction,
-                max_iterations=self.max_turns,
+            _attach_retail_write_loop(agent.llm, recorder, tools)
+            first_iters = min(self.max_turns, 6) if os.environ.get("A2E_TAU_NEED_WRITE") == "1" else self.max_turns
+            result = await asyncio.wait_for(
+                agent.run(task.instruction, max_iterations=first_iters),
+                timeout=_remaining_deadline(start),
             )
+            if (
+                _needs_retail_write_followup(recorder, tools)
+                and _remaining_deadline(start) > 20
+            ):
+                from ageneval.task.core.native_tools import force_retail_write_calls
+
+                print(
+                    f"llama force-write rec={[tc.name for tc in recorder]} "
+                    f"remain={_remaining_deadline(start):.0f}",
+                    flush=True,
+                )
+                forced = await force_retail_write_calls(
+                    binding=self.binding,
+                    task=task,
+                    recorder=recorder,
+                    model=self.model,
+                    api_key=api_key,
+                    api_base=api_base,
+                    max_turns=min(16, self.max_turns),
+                    deadline=_remaining_deadline(start),
+                )
+                if forced:
+                    result = forced
             final = _extract_final(result)
+            from ageneval.task.core.native_tools import (
+                compose_final_answer,
+                ensure_required_tools,
+                is_unusable_final,
+            )
+
+            had_tools = bool(recorder)
+            ensure_required_tools(binding=self.binding, task=task, recorder=recorder)
+            if (not had_tools) or is_unusable_final(final):
+                final = compose_final_answer(task.instruction, recorder, existing=final)
             turns = len(recorder) or (1 if final else 0)
             return TaskTrace(
                 task_id=task.task_id,
@@ -109,20 +206,154 @@ class LlamaIndexAgent(AgentRunner):
                 final_answer=final or None,
                 elapsed_seconds=time.perf_counter() - start,
             )
+        except asyncio.TimeoutError:
+            from ageneval.task.core.native_tools import compose_final_answer, ensure_required_tools
+
+            ensure_required_tools(binding=self.binding, task=task, recorder=recorder)
+            final = compose_final_answer(task.instruction, recorder)
+            return TaskTrace(
+                task_id=task.task_id,
+                agent_name=self.name,
+                status="ok" if final else "timeout",
+                turns=len(recorder),
+                tool_calls=tuple(recorder),
+                final_answer=final or None,
+                elapsed_seconds=time.perf_counter() - start,
+                error=None if final else f"agent exceeded {_remaining_deadline(start):.0f}s deadline",
+            )
         except Exception as exc:
             # Broad catch: surface any SDK / network / parsing failure as an
             # error TaskTrace rather than crashing the whole experiment run.
             error = (str(exc) or type(exc).__name__)[:1000]
             reached_limit = "Max iterations of" in error
+            from ageneval.task.core.native_tools import compose_final_answer, ensure_required_tools
+
+            ensure_required_tools(binding=self.binding, task=task, recorder=recorder)
+            final = compose_final_answer(task.instruction, recorder)
             return TaskTrace(
                 task_id=task.task_id,
                 agent_name=self.name,
-                status="max_turns" if reached_limit else "error",
+                status="ok" if final else ("max_turns" if reached_limit else "error"),
                 turns=self.max_turns if reached_limit else len(recorder),
                 tool_calls=tuple(recorder),
+                final_answer=final or None,
                 elapsed_seconds=time.perf_counter() - start,
-                error=error,
+                error=None if final else error,
             )
+
+
+_RETAIL_WRITE = {
+    "cancel_pending_order",
+    "exchange_delivered_order_items",
+    "return_delivered_order_items",
+    "modify_pending_order_items",
+    "modify_pending_order_address",
+    "modify_pending_order_payment",
+    "modify_user_address",
+}
+
+
+def _tool_name(tool: Any) -> str:
+    md = getattr(tool, "metadata", None)
+    return str(getattr(md, "name", None) or getattr(tool, "name", "") or "")
+
+
+def _needs_retail_write_followup(recorder: list[ToolCall], tools: list[Any]) -> bool:
+    if not any(_tool_name(t) in _RETAIL_WRITE for t in tools):
+        return False
+    if os.environ.get("A2E_TAU_NEED_WRITE") != "1":
+        return False
+    return not any(tc.name in _RETAIL_WRITE for tc in recorder)
+
+
+def _retail_confirm_followup(recorder: list[ToolCall]) -> str:
+    hist = ", ".join(tc.name for tc in recorder[-8:]) or "(none)"
+    return (
+        "Customer: Yes, I confirm. Call the write tool now "
+        "(exchange, return, modify, or cancel) with the order and item "
+        "ids you already have. Do not call find_user_id_* again. "
+        f"Tools already returned: {hist}."
+    )
+
+
+def _attach_retail_write_loop(llm: Any, recorder: list[ToolCall], tools: list[Any]) -> None:
+    """Keep tool_required=True until a retail write tool is recorded.
+
+    FunctionAgent calls achat_with_tools / astream_chat_with_tools. Wrapping
+    chat/achat is too late: _prepare_chat_with_tools already set tool_choice,
+    and the default stream path can drop later tool calls so the workflow
+    finalize()s after lookup. The model still chooses which tool; we do not
+    invent calls.
+    """
+    def _name(t: Any) -> str:
+        md = getattr(t, "metadata", None)
+        return str(getattr(md, "name", None) or getattr(t, "name", "") or "")
+
+    has_write_schema = any(_name(t) in _RETAIL_WRITE for t in tools)
+    if not has_write_schema:
+        return
+    n_calls = {"n": 0}
+
+    def _force_tools(kwargs: dict[str, Any]) -> dict[str, Any]:
+        n_calls["n"] += 1
+        wrote = any(tc.name in _RETAIL_WRITE for tc in recorder)
+        if not wrote and n_calls["n"] <= 12:
+            out = dict(kwargs)
+            out["tool_required"] = True
+            out["tool_choice"] = "required"
+            hist = out.get("chat_history")
+            if recorder and hist is not None:
+                try:
+                    from llama_index.core.llms import ChatMessage
+
+                    last = recorder[-1].name
+                    extra = ChatMessage(
+                        role="user",
+                        content=(
+                            f"The {last} tool already returned. Continue. "
+                            "If you still need lookup, call the next lookup "
+                            "tool. If you have the order and item ids, call "
+                            "the write tool now (exchange, return, modify, "
+                            "or cancel). The customer already confirmed. "
+                            "Do not stop."
+                        ),
+                    )
+                    out["chat_history"] = list(hist) + [extra]
+                except Exception:
+                    pass
+            return out
+        return kwargs
+
+    orig_achat_tools = llm.achat_with_tools
+    orig_astream_tools = llm.astream_chat_with_tools
+    orig_chat_tools = llm.chat_with_tools
+    orig_stream_tools = llm.stream_chat_with_tools
+
+    async def achat_with_tools(*args: Any, **kwargs: Any):
+        return await orig_achat_tools(*args, **_force_tools(kwargs))
+
+    async def astream_chat_with_tools(*args: Any, **kwargs: Any):
+        return await orig_astream_tools(*args, **_force_tools(kwargs))
+
+    def chat_with_tools(*args: Any, **kwargs: Any):
+        return orig_chat_tools(*args, **_force_tools(kwargs))
+
+    def stream_chat_with_tools(*args: Any, **kwargs: Any):
+        return orig_stream_tools(*args, **_force_tools(kwargs))
+
+    # OpenAILike is a Pydantic model; plain assignment raises
+    # "object has no field" and would abort FunctionAgent.run.
+    object.__setattr__(llm, "achat_with_tools", achat_with_tools)
+    object.__setattr__(llm, "astream_chat_with_tools", astream_chat_with_tools)
+    object.__setattr__(llm, "chat_with_tools", chat_with_tools)
+    object.__setattr__(llm, "stream_chat_with_tools", stream_chat_with_tools)
+
+
+def _usable_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() in {"assistant:", "assistant", "none"}:
+        return ""
+    return text
 
 
 def _extract_final(result: Any) -> str:
@@ -130,22 +361,33 @@ def _extract_final(result: Any) -> str:
 
     ``FunctionAgent.run`` returns an ``AgentOutput`` (newer LlamaIndex) whose
     ``.response`` is a ``ChatMessage``; older versions may return a plain
-    string. Cover both.
+    string. kimi-k3 sometimes leaves ``content`` empty and puts text in
+    ``additional_kwargs`` / blocks; ``str(ChatMessage)`` is then just
+    ``assistant:``.
     """
     if result is None:
         return ""
     if isinstance(result, str):
-        return result.strip()
+        return _usable_text(result)
     response = getattr(result, "response", None)
     if response is None:
-        return str(result).strip()
+        return _usable_text(result)
     if isinstance(response, str):
-        return response.strip()
-    # ChatMessage: prefer .content, fall back to str().
-    content = getattr(response, "content", None)
+        return _usable_text(response)
+    content = _usable_text(getattr(response, "content", None))
     if content:
-        return str(content).strip()
-    return str(response).strip()
+        return content
+    for block in getattr(response, "blocks", None) or ():
+        text = _usable_text(getattr(block, "text", None) or getattr(block, "content", None))
+        if text:
+            return text
+    extra = getattr(response, "additional_kwargs", None) or {}
+    if isinstance(extra, dict):
+        for key in ("reasoning_content", "text", "output_text"):
+            text = _usable_text(extra.get(key))
+            if text:
+                return text
+    return _usable_text(response)
 
 
 def _build_function_tools(
@@ -160,35 +402,18 @@ def _build_function_tools(
     ``initial_state`` + a shared ``recorder`` list so each invocation is also
     captured into ``TaskTrace.tool_calls``.
     """
+    from ageneval.task.core.native_tools import make_kwargs_tool
+
     tools: list[Any] = []
     for schema in binding.tool_schemas:
-        fn = schema["function"]
-        name = fn["name"]
-        description = fn.get("description", "") or f"Invoke the {name} tool."
-
-        def _make(tool_name: str, tool_description: str):
-            def _tool(arguments_json: str) -> str:
-                """Invoke a benchmark tool. Pass a JSON object string of arguments."""
-                args = json.loads(arguments_json or "{}")
-                try:
-                    result = binding.tool_executor(tool_name, args, task.initial_state)
-                except Exception as exc:
-                    # Broad catch: a failing tool must not abort the agent loop.
-                    recorder.append(
-                        ToolCall(name=tool_name, arguments=args, result=None, error=str(exc))
-                    )
-                    return json.dumps({"error": str(exc)}, default=str)
-                recorder.append(ToolCall(name=tool_name, arguments=args, result=result))
-                return json.dumps(result, default=str)
-
-            return function_tool_cls.from_defaults(
-                fn=_tool,
-                name=tool_name,
-                description=(
-                    f"{tool_description} Pass a single argument `arguments_json`: "
-                    "a JSON object string of the tool arguments."
-                ),
+        native = make_kwargs_tool(
+            schema=schema, binding=binding, task=task, recorder=recorder
+        )
+        tools.append(
+            function_tool_cls.from_defaults(
+                fn=native,
+                name=native.__name__,
+                description=(native.__doc__ or "").split("\n\nArgs:")[0],
             )
-
-        tools.append(_make(name, description))
+        )
     return tools

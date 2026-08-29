@@ -22,8 +22,8 @@ Uses ``langchain-openai`` and is OpenAI-compatible. Configure via env:
 
 ```bash
 export OPENAI_API_KEY=...
-export OPENAI_API_BASE=http://35.220.164.252:3888/v1/   # any OpenAI-compatible
-export A2E_LANGGRAPH_MODEL=deepseek-v4-pro
+export OPENAI_API_BASE=https://api.openai.com/v1/   # or any OpenAI-compatible base
+export A2E_LANGGRAPH_MODEL=gpt-4o-mini
 ```
 
 Defaults fall back to ``OPENAI_BASE_URL`` / ``OPENAI_API_KEY`` and

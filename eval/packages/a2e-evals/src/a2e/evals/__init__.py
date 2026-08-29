@@ -1,4 +1,4 @@
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
 from . import llm, metrics, templating, tracing, utils
 from .evaluators import (
@@ -18,7 +18,11 @@ from .evaluators import (
 from .llm import LLM, a2e_prompt_to_prompt_template
 from .utils import download_benchmark_dataset
 
-__version__ = version("a2e-evals")
+try:
+    __version__ = version("a2e-evals")
+except PackageNotFoundError:
+    # PYTHONPATH / source checkout without installed package metadata
+    __version__ = "3.0.0"
 
 
 __all__ = [

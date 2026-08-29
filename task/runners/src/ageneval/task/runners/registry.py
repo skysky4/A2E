@@ -35,19 +35,20 @@ def _load_tau2(**kw: Any):
     return load_tau2_tasks(**kw)
 
 
-def _bind_tau2(**_kw: Any):
+def _bind_tau2(**kw: Any):
     from ageneval.task.datasets.tau2 import build_tau2_binding
-    return build_tau2_binding()
+    return build_tau2_binding(domain=kw.get("domain") or "retail")
 
 
 def _load_tau3(**kw: Any):
     from ageneval.task.datasets.tau3 import load_tau3_tasks
-    return load_tau3_tasks(**{k: v for k, v in kw.items() if k in ("n", "split")})
+    allowed = {k: v for k, v in kw.items() if k in ("n", "split", "domain")}
+    return load_tau3_tasks(**allowed)
 
 
-def _bind_tau3(**_kw: Any):
+def _bind_tau3(**kw: Any):
     from ageneval.task.datasets.tau3 import build_tau3_binding
-    return build_tau3_binding()
+    return build_tau3_binding(domain=kw.get("domain") or "retail")
 
 
 def _load_mmlu(**kw: Any):
@@ -108,6 +109,16 @@ def _load_gdpval(**kw: Any):
 def _bind_gdpval(**_kw: Any):
     from ageneval.task.datasets.gdpval import build_gdpval_binding
     return build_gdpval_binding()
+
+
+def _load_deepsearchqa(**kw: Any):
+    from ageneval.task.datasets.deepsearchqa import load_deepsearchqa_tasks
+    return load_deepsearchqa_tasks(**{k: v for k, v in kw.items() if k in ("n", "split")})
+
+
+def _bind_deepsearchqa(**_kw: Any):
+    from ageneval.task.datasets.deepsearchqa import build_deepsearchqa_binding
+    return build_deepsearchqa_binding()
 
 
 # ─── sandbox datasets (SWE-bench) ─────────────────────────────────────────────
@@ -263,23 +274,41 @@ def _qa_bind(bench: str) -> Callable:
 #   - free-form / code→ substring or exact_match + llm_judge
 DATASETS: Dict[str, Dict[str, Any]] = {
     "tau-bench": {"load": _load_tau_bench, "bind": _bind_tau_bench, "kind": "tool",
-                  "default_evaluators": ["tool_recall", "llm_judge"]},
+                  "default_evaluators": ["tool_recall", "llm_judge"],
+                  "agent_overrides": {"max_turns": 30, "max_steps": 30}},
     "tau2":      {"load": _load_tau2, "bind": _bind_tau2, "kind": "tool",
-                  "default_evaluators": ["tool_recall", "llm_judge"]},
+                  "default_evaluators": ["tool_recall", "llm_judge"],
+                  "agent_overrides": {"max_turns": 30, "max_steps": 30}},
     "tau3":      {"load": _load_tau3, "bind": _bind_tau3, "kind": "tool",
-                  "default_evaluators": ["tool_recall", "llm_judge"]},
+                  "default_evaluators": ["tool_recall", "llm_judge"],
+                  "agent_overrides": {"max_turns": 30, "max_steps": 30}},
+    "tau3bench": {"load": _load_tau3, "bind": _bind_tau3, "kind": "tool",
+                  "default_evaluators": ["tool_recall", "llm_judge"],
+                  "agent_overrides": {"max_turns": 30, "max_steps": 30}},
+    "tau3-bench": {"load": _load_tau3, "bind": _bind_tau3, "kind": "tool",
+                   "default_evaluators": ["tool_recall", "llm_judge"],
+                   "agent_overrides": {"max_turns": 30, "max_steps": 30}},
     "mmlu":      {"load": _load_mmlu, "bind": _bind_mmlu, "kind": "qa",
-                  "default_evaluators": ["mc_letter", "llm_judge"]},
+                  "default_evaluators": ["mc_letter", "llm_judge"],
+                  "agent_overrides": {"max_turns": 8, "max_steps": 8}},
     "gsm8k":     {"load": _load_gsm8k, "bind": _bind_gsm8k, "kind": "qa",
-                  "default_evaluators": ["numeric_match", "llm_judge"]},
+                  "default_evaluators": ["numeric_match", "llm_judge"],
+                  "agent_overrides": {"max_turns": 8, "max_steps": 8}},
     "humaneval": {"load": _load_humaneval, "bind": _bind_humaneval, "kind": "qa",
-                  "default_evaluators": ["substring", "llm_judge"]},
+                  "default_evaluators": ["humaneval_pass"],
+                  "agent_overrides": {"max_turns": 8, "max_steps": 8}},
     "persistbench": {"load": _load_persistbench, "bind": _bind_persistbench, "kind": "qa",
-                     "default_evaluators": ["substring", "llm_judge"]},
+                     "default_evaluators": ["substring"],
+                     "agent_overrides": {"max_turns": 8, "max_steps": 8}},
     "traject-bench": {"load": _load_traject_bench, "bind": _bind_traject_bench, "kind": "tool",
-                      "default_evaluators": ["tool_recall", "llm_judge"]},
-    "gdpval": {"load": _load_gdpval, "bind": _bind_gdpval, "kind": "qa",
-               "default_evaluators": ["llm_judge"]},
+                      "default_evaluators": ["tool_recall", "llm_judge"],
+                      "agent_overrides": {"max_turns": 8, "max_steps": 8}},
+    "gdpval-aa": {"load": _load_gdpval, "bind": _bind_gdpval, "kind": "qa",
+                  "default_evaluators": ["llm_judge"],
+                  "agent_overrides": {"max_turns": 8, "max_steps": 8}},
+    "deepsearchqa": {"load": _load_deepsearchqa, "bind": _bind_deepsearchqa, "kind": "tool",
+                     "default_evaluators": ["deepsearch_match", "tool_recall"],
+                     "agent_overrides": {"max_turns": 8, "max_steps": 8}},
 }
 
 # qa_suite — 10 config-driven pure-QA benchmarks (no sandbox/tools).
@@ -299,7 +328,8 @@ _QA_DEFAULT_EVALS: Dict[str, list] = {
 for _b in ("gpqa", "mmlu-pro", "arc-challenge", "truthfulqa", "bbh",
            "agieval", "commonsenseqa", "hellaswag", "openbookqa", "math"):
     DATASETS[_b] = {"load": _qa_load(_b), "bind": _qa_bind(_b), "kind": "qa",
-                    "default_evaluators": _QA_DEFAULT_EVALS[_b]}
+                    "default_evaluators": _QA_DEFAULT_EVALS[_b],
+                    "agent_overrides": {"max_turns": 8, "max_steps": 8}}
 
 # Sandbox datasets — run inside a docker container; graded by score_swe_bench
 # while the container is alive (see SandboxScoringRunner). ``agent_overrides``
@@ -353,15 +383,18 @@ def _build_langgraph(*, binding: Any, **kw: Any):
 def _build_claude_sdk(*, binding: Any, **kw: Any):
     """Build the generic ClaudeSDKAgent for any binding."""
     from ageneval.task.agents.claude_sdk import ClaudeSDKAgent
-    # Filter out kwargs the ClaudeSDKAgent doesn't accept (e.g. api_base / api_key
-    # which only make sense for OpenAI-compatible langgraph route).
-    accepted = {"model", "max_turns"}
+    # ClaudeSDKAgent talks Anthropic Messages API but can reuse the same
+    # gateway credentials as OpenAI-compatible harnesses (api_base / api_key).
+    accepted = {"model", "max_turns", "api_base", "api_key"}
     return ClaudeSDKAgent(binding=binding, **{k: v for k, v in kw.items() if k in accepted})
 
 
 def _build_smolagents(*, binding: Any, **kw: Any):
     """Build the generic SmolAgentsAgent for any binding."""
     from ageneval.task.agents.smolagents import SmolAgentsAgent
+    # Dataset overrides use max_turns; smolagents names the budget max_steps.
+    if "max_steps" not in kw and kw.get("max_turns") is not None:
+        kw = {**kw, "max_steps": kw["max_turns"]}
     accepted = {"model", "max_steps", "api_base", "api_key"}
     return SmolAgentsAgent(binding=binding, **{k: v for k, v in kw.items() if k in accepted})
 
@@ -497,35 +530,116 @@ def _eval_exact_match(output: dict, expected: dict) -> float:
 
 def _eval_substring(output: dict, expected: dict) -> float:
     answer = _final_answer(output)
-    if not answer:
+    golds = list((expected or {}).get("expected_outputs") or [])
+    if not answer or not golds:
         return 0.0
-    hits = sum(1 for s in (expected or {}).get("expected_outputs", []) if str(s).lower() in str(answer).lower())
-    denom = max(1, len((expected or {}).get("expected_outputs", [])))
-    return hits / denom
+    hits = sum(1 for s in golds if str(s).lower() in str(answer).lower())
+    return hits / len(golds)
 
 
 def _eval_tool_recall(output: dict, expected: dict) -> float:
     called = set((output or {}).get("tool_calls", []))
     expected_names = {a.get("name") for a in (expected or {}).get("expected_actions", []) if a.get("name")}
     if not expected_names:
-        return 1.0
+        return 0.0
     return len(called & expected_names) / len(expected_names)
 
 
 _NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+_FRAC_RE = re.compile(r"\\d?frac\s*\{\s*(-?\d+)\s*\}\s*\{\s*(-?\d+)\s*\}")
+_SLASH_RE = re.compile(r"(-?\d+)\s*/\s*(-?\d+)")
+
+
+def _parse_math_number(text: str) -> float | None:
+    """Parse a MATH-style answer: LaTeX fraction, a/b, or a plain number."""
+    s = str(text or "").strip()
+    if not s:
+        return None
+    s = s.replace(",", "").replace("$", "").strip()
+    fracs = list(_FRAC_RE.finditer(s))
+    if fracs:
+        m = fracs[-1]
+        den = float(m.group(2))
+        return None if den == 0 else float(m.group(1)) / den
+    tail = s.split()[-1] if s.split() else s
+    m = _SLASH_RE.fullmatch(s) or _SLASH_RE.fullmatch(tail)
+    if m:
+        den = float(m.group(2))
+        return None if den == 0 else float(m.group(1)) / den
+    nums = _NUM_RE.findall(s)
+    if not nums:
+        return None
+    try:
+        return float(nums[-1])
+    except (ValueError, TypeError):
+        return None
 
 
 def _eval_numeric_match(output: dict, expected: dict) -> float:
-    """Compare final_answer's last number against expected[0]."""
-    answer = (output or {}).get("final_answer", "")
-    nums = _NUM_RE.findall(str(answer) or "")
-    if not nums:
+    """Compare the agent's numeric answer against expected[0].
+
+    Unwraps a ``{"final_answer": ...}`` envelope and accepts fractions /
+    LaTeX ``\\frac{a}{b}`` so MATH items are not scored by a digits-only regex.
+    """
+    answer = _final_answer(output)
+    pred = _parse_math_number(answer)
+    ref = _parse_math_number(((expected or {}).get("expected_outputs") or [""])[0])
+    if pred is None or ref is None:
         return 0.0
-    ref = ((expected or {}).get("expected_outputs") or [""])[0]
-    try:
-        return float(abs(float(nums[-1]) - float(str(ref).replace(",", ""))) < 1e-6)
-    except (ValueError, TypeError):
+    return float(abs(pred - ref) < 1e-6)
+
+
+_SET_SPLIT_RE = re.compile(r"\s*(?:,|;|\band\b|\n)\s*", re.IGNORECASE)
+
+
+def _deepsearch_items(text: str) -> list[str]:
+    parts = [re.sub(r"\s+", " ", p).strip(" .;:") for p in _SET_SPLIT_RE.split(text or "")]
+    return [p.lower() for p in parts if p]
+
+
+def _eval_deepsearch_match(output: dict, expected: dict, input: dict) -> float:
+    """DeepSearchQA outcome metric: single-answer containment or set-item recall.
+
+    Official autorater is gemini-2.5-flash. This deterministic stand-in scores
+    Single Answer as 1 iff the gold string appears in the reply, and Set Answer
+    as the fraction of gold items found in the reply.
+    """
+    answer = _final_answer(output)
+    gold = str(((expected or {}).get("expected_outputs") or [""])[0] or "")
+    if not answer or not gold:
         return 0.0
+    state = (input or {}).get("initial_state") or {}
+    answer_type = str(state.get("answer_type") or "Single Answer")
+    if answer_type != "Set Answer":
+        g = gold.strip().lower()
+        a = answer.strip().lower()
+        return float(g == a or g in a)
+    golds = _deepsearch_items(gold)
+    if not golds:
+        return 0.0
+    blob = answer.lower()
+    pred = set(_deepsearch_items(answer))
+    hits = sum(1 for g in golds if g in pred or g in blob)
+    return hits / len(golds)
+
+
+def _eval_humaneval_pass(output: dict, expected: dict, input: dict) -> float:
+    """Official HumanEval pass@1: run hidden unit tests, not substring-of-canonical."""
+    from ageneval.task.datasets.humaneval import score_humaneval_state
+
+    state = (input or {}).get("initial_state") or {}
+    # Do not use ``_final_answer``: its ``.strip()`` drops the leading indent
+    # that a function body needs when concatenated onto the official prompt.
+    raw = str((output or {}).get("final_answer", "") or "")
+    if raw.lstrip().startswith("{") and "final_answer" in raw:
+        try:
+            obj = json.loads(raw)
+        except (ValueError, TypeError):
+            obj = None
+        if isinstance(obj, dict) and "final_answer" in obj:
+            raw = str(obj["final_answer"])
+    result = score_humaneval_state(raw, state)
+    return 1.0 if result.get("passed") else 0.0
 
 
 def _eval_mc_letter(output: dict, expected: dict) -> float:
@@ -638,6 +752,8 @@ for _eval_fn, _eval_name in (
     (_eval_tool_recall, "tool_recall"),
     (_eval_numeric_match, "numeric_match"),
     (_eval_mc_letter, "mc_letter"),
+    (_eval_humaneval_pass, "humaneval_pass"),
+    (_eval_deepsearch_match, "deepsearch_match"),
 ):
     _eval_fn.__name__ = _eval_name
     _eval_fn.__qualname__ = _eval_name
@@ -649,6 +765,8 @@ EVALUATORS: Dict[str, Callable[..., Any]] = {
     "tool_recall": _eval_tool_recall,
     "numeric_match": _eval_numeric_match,
     "mc_letter": _eval_mc_letter,
+    "humaneval_pass": _eval_humaneval_pass,
+    "deepsearch_match": _eval_deepsearch_match,
     "swe_resolved": _eval_swe_resolved,
     "swe_fail_to_pass": _eval_swe_fail_to_pass,
     "swe_pass_to_pass": _eval_swe_pass_to_pass,

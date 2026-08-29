@@ -75,3 +75,12 @@ docs/report/
 
 # Local agent workspace
 agent/
+
+# Local dependency/package cache
+.extra-pkgs/
+
+# Local cluster / scratch (never commit)
+DATA_LOCATION.txt
+.api.env
+*.nohup
+.export-*/

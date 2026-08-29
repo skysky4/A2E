@@ -21,6 +21,7 @@ import sys
 from typing import Any
 
 from ageneval.task.core import SandboxScoringRunner, setup_instrumentation
+from ageneval.task.core.openai_compat import install_openai_compat
 from ageneval.task.runners import (
     AGENTS,
     DATASETS,
@@ -83,14 +84,43 @@ def _make_task_fn(agent, ds_entry: dict | None = None):
             sandbox=metadata.get("sandbox") if is_sandbox else None,
         )
         trace = asyncio.run(runner.run(task_input))
+        spans = []
+        for tc in trace.tool_calls or ():
+            args = getattr(tc, "arguments", None) or {}
+            if not isinstance(args, dict):
+                try:
+                    args = dict(args)
+                except Exception:  # noqa: BLE001
+                    args = {}
+            spans.append({"name": str(tc.name), "arguments": args})
         out = {
             "final_answer": trace.final_answer or "",
-            "tool_calls": [tc.name for tc in trace.tool_calls],
+            "tool_calls": [s["name"] for s in spans],
+            "tool_spans": spans,
             "status": trace.status,
             "turns": trace.turns,
             "trace_id": trace.trace_id,
             "error": trace.error,
         }
+        # Persist prompt metadata so empty-system-prompt bugs are auditable
+        # from experiment_runs.output (TaskTrace.raw was previously dropped).
+        raw = dict(trace.raw or {})
+        prompt_chars = raw.get("system_prompt_chars")
+        if prompt_chars is None:
+            binding = getattr(runner, "binding", None) or getattr(agent, "binding", None)
+            if binding is not None:
+                try:
+                    prompt_chars = len((binding.render_system_prompt() or "").strip())
+                except Exception:  # noqa: BLE001
+                    prompt_chars = None
+        if prompt_chars is not None:
+            out["system_prompt_chars"] = int(prompt_chars)
+        extra = raw.get("additional_instructions")
+        if extra:
+            out["additional_instructions"] = str(extra)[:2000]
+        preview = raw.get("system_prompt_preview")
+        if preview:
+            out["system_prompt_preview"] = str(preview)[:500]
         if is_sandbox:
             raw = dict(trace.raw)
             out["resolved"] = bool(raw.get("resolved"))
@@ -170,6 +200,11 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--full",
+        action="store_true",
+        help="use every loaded task (ignores --n; sample strategy=all)",
+    )
+    parser.add_argument(
         "--sample-seed",
         type=int,
         default=None,
@@ -180,7 +215,7 @@ def main() -> int:
         default=None,
         help="optional run id; omitted generates a unique timestamped id",
     )
-    parser.add_argument("--domain", default=None, help="τ-bench-style 'retail' / 'airline' (for tau-bench / tau2)")
+    parser.add_argument("--domain", default=None, help="τ-bench-style 'retail' / 'airline' (for tau-bench / tau2 / tau3)")
     parser.add_argument("--model", default=None)
     parser.add_argument("--api-base", default=None)
     parser.add_argument("--api-key", default=None)
@@ -189,17 +224,20 @@ def main() -> int:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s [%(levelname)s] %(message)s")
+    install_openai_compat()
 
     if args.list:
         print(json.dumps(list_registries(), indent=2, ensure_ascii=False))
         return 0
     if not args.dataset:
         parser.error("--dataset is required (or pass --list)")
+    if args.dataset == "gdpval":
+        parser.error("dataset 'gdpval' was removed; use --dataset gdpval-aa (HF openai/gdpval)")
     if args.dataset not in DATASETS:
         parser.error(f"unknown dataset: {args.dataset}. Available: {sorted(DATASETS)}")
     if args.agent not in AGENTS:
         parser.error(f"unknown agent: {args.agent}. Available: {sorted(AGENTS)}")
-    if args.n <= 0:
+    if not args.full and args.n <= 0:
         parser.error("--n must be a positive integer")
 
     # 1. Load the full candidate split, then select this run's exact sample.
@@ -209,13 +247,21 @@ def main() -> int:
     ds_entry = DATASETS[args.dataset]
     load_kwargs: dict[str, Any] = {"n": None}
     bind_kwargs: dict[str, Any] = {}
-    if args.dataset in ("tau-bench", "tau2") and args.domain:
-        load_kwargs["domain"] = args.domain
-        bind_kwargs["domain"] = args.domain
+    if args.dataset in ("tau-bench", "tau2", "tau3", "tau3bench", "tau3-bench"):
+        # Live tools exist for retail/airline only. Default retail so a
+        # telecom-heavy vendor dump is never paired with the retail wiki.
+        domain = args.domain or "retail"
+        load_kwargs["domain"] = domain
+        bind_kwargs["domain"] = domain
+    # Sandbox loaders reorder toward locally-cached docker images when ``n`` is
+    # set. Passing n=None then randomly sampling (as we do for HF QA) would
+    # pick an uncached image and docker pull through a dead proxy.
+    if ds_entry.get("kind") == "sandbox":
+        load_kwargs["n"] = None if args.full else args.n
     dataset = ds_entry["load"](**load_kwargs)
     dataset, selection = sample_dataset(
         dataset,
-        n=args.n,
+        n=None if args.full else args.n,
         seed=args.sample_seed,
     )
     binding = ds_entry["bind"](**bind_kwargs)

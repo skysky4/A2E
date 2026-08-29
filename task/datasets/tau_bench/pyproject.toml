@@ -23,8 +23,14 @@ dependencies = [
 [tool.hatch.build.targets.wheel]
 # PEP 420 implicit namespace — ship src/ageneval, no top-level __init__.py.
 packages = ["src/ageneval"]
-artifacts = ["src/ageneval/task/datasets/tau_bench/full_tasks.json.gz"]
+artifacts = [
+    "src/ageneval/task/datasets/tau_bench/full_tasks.json.gz",
+    "src/ageneval/task/datasets/tau_bench/upstream/**",
+]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/ageneval", "README.md"]
-artifacts = ["src/ageneval/task/datasets/tau_bench/full_tasks.json.gz"]
+artifacts = [
+    "src/ageneval/task/datasets/tau_bench/full_tasks.json.gz",
+    "src/ageneval/task/datasets/tau_bench/upstream/**",
+]

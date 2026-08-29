@@ -41,6 +41,7 @@ A<sup>2</sup>E is harness and vendor agnostic, with out-of-the-box support for p
 
 ## 🎉 Updates
 
+- **2026-08-29** — Added DeepSearchQA (`deepsearchqa`), official cell runners (`scripts/run_n1.sh`, `scripts/run_full.sh`), and GDPval-AA (`gdpval-aa`).
 - **2026-08-12** — 🤗 Paper page live on [Hugging Face](https://huggingface.co/papers/2608.07346).
 - **2026-08-11** — 📓 [Colab quickstart notebook](https://colab.research.google.com/github/stevewithjobs/AEP/blob/yuchenyue/notebooks/a2e_quickstart.ipynb) published — run A<sup>2</sup>E end to end in the browser.
 - **2026-08-10** — ✨✨ Full codebase of A<sup>2</sup>E released.
@@ -71,8 +72,15 @@ Pick a dataset and an agent harness, then run:
 # Terminal 1 — keep the server up
 bash scripts/start.sh                 # → http://localhost:6006
 
-# Terminal 2
+# Terminal 2 — demo cell (τ-bench × agno)
 bash task/run_experiment.sh
+
+# Official n=1 / full-split cells (evaluators, seed, and per-dataset budgets)
+bash scripts/run_n1.sh <agent> <dataset>
+bash scripts/run_full.sh <agent> <dataset>
+# e.g. bash scripts/run_n1.sh agno tau-bench
+#      bash scripts/run_n1.sh langgraph deepsearchqa
+#      bash scripts/run_full.sh llama-index gdpval-aa
 ```
 
 Or follow the interactive walkthrough: `bash example/run_examples.sh`.
@@ -87,10 +95,11 @@ uv run --frozen python examples/run_experiment.py \
   --dataset <dataset> \
   --agent   <framework>      # default: agno
   --model   <model>          # default: A2E_MODEL from .env
-  --evaluators <a,b,...>     # default: exact_match,substring
+  --evaluators <a,b,...>     # default: dataset preset
   --n       <count>          # default: 40
-  --sample-seed 20260721     # optional, reproducible sample
-  --domain  retail           # tau-bench / tau2 only
+  --full                     # use the official split instead of --n
+  --sample-seed 20260816 \
+  --domain  retail           # tau-bench / tau2 / tau3
 ```
 
 | Flag | Purpose |
@@ -101,59 +110,75 @@ uv run --frozen python examples/run_experiment.py \
 | `--model` | Override `A2E_MODEL` for this run |
 | `--evaluators` | Comma-separated scorers |
 | `--n` | Sample size (absolute count, random without replacement) |
-| `--domain` | `retail` / `airline` (tau-bench / tau2) |
+| `--full` | Run the official split (ignore `--n`) |
+| `--sample-seed` | Reproducible sample (official cells use `20260816`) |
+| `--domain` | `retail` / `airline` (tau-bench / tau2 / tau3) |
 
 ```bash
+cd task
 uv run --frozen python examples/run_experiment.py --list
 ```
+
+### Official cell budgets
+
+`scripts/run_n1.sh` and `scripts/run_full.sh` apply the same per-dataset caps (override with env vars if needed):
+
+| Dataset | `max_turns` | `max_tokens` | LLM timeout | wall / deadline |
+|---------|-------------|--------------|-------------|-----------------|
+| `tau-bench` / `tau2` / `tau3` | 30 | 4096 | 180s | 1200s / 1100s |
+| `deepsearchqa` | 8 | 4096 | 180s | 720s / 620s |
+| `gdpval-aa` | 8 | 16384 | 600s | 1800s / 1700s |
+
+Set `A2E_MODEL`, `OPENAI_API_KEY`, and `OPENAI_API_BASE` in `.env`. Optional GDPval locals: `A2E_GDPVAL_FILES_DIR`, `A2E_GDPVAL_PARQUET`.
 
 ### Benchmarks
 
 Each benchmark includes a built-in evaluator preset. Use `--evaluators` to override
 it; use `--list` to inspect every available benchmark, harness, and evaluator.
 
-| Benchmark | Kind | Built-in default evaluators | Sandbox |
-|-----------|------|-----------------------------|---------|
-| `tau-bench` | Tool | `tool_recall`, `llm_judge` | / |
-| `tau2` | Tool | `tool_recall`, `llm_judge` | / |
-| `tau3` | Tool | `tool_recall`, `llm_judge` | / |
-| `traject-bench` | Tool | `tool_recall`, `llm_judge` | / |
-| `mmlu` | QA | `mc_letter`, `llm_judge` | / |
-| `gsm8k` | QA | `numeric_match`, `llm_judge` | / |
-| `humaneval` | QA | `substring`, `llm_judge` | / |
-| `persistbench` | QA | `substring`, `llm_judge` | / |
-| `gdpval` | QA | `llm_judge` | / |
-| `gpqa` | QA | `mc_letter`, `llm_judge` | / |
-| `mmlu-pro` | QA | `mc_letter`, `llm_judge` | / |
-| `arc-challenge` | QA | `mc_letter`, `llm_judge` | / |
-| `truthfulqa` | QA | `mc_letter`, `llm_judge` | / |
-| `agieval` | QA | `mc_letter`, `llm_judge` | / |
-| `commonsenseqa` | QA | `mc_letter`, `llm_judge` | / |
-| `hellaswag` | QA | `mc_letter`, `llm_judge` | / |
-| `openbookqa` | QA | `mc_letter`, `llm_judge` | / |
-| `bbh` | QA | `exact_match`, `llm_judge` | / |
-| `math` | QA | `numeric_match`, `llm_judge` | / |
-| `swe-bench-lite` | Sandbox | `swe_resolved`, `swe_fail_to_pass`, `swe_pass_to_pass` | ✅ |
-| `swe-bench-verified` | Sandbox | `swe_resolved`, `swe_fail_to_pass`, `swe_pass_to_pass` | ✅ |
-| `swe-bench-pro` | Sandbox | `swe_resolved`, `swe_fail_to_pass`, `swe_pass_to_pass` | ✅ |
-| `terminal-bench-2` | Sandbox | `tb_resolved` | ✅ |
-| `terminal-bench-2.1` | Sandbox | `tb_resolved` | ✅ |
+| Benchmark              | Kind    | Built-in default evaluators                                  | Sandbox |
+| ---------------------- | ------- | ------------------------------------------------------------ | ------- |
+| `tau-bench`          | Tool    | `tool_recall`, `llm_judge`                               | /       |
+| `tau2`               | Tool    | `tool_recall`, `llm_judge`                               | /       |
+| `tau3`               | Tool    | `tool_recall`, `llm_judge`                               | /       |
+| `traject-bench`      | Tool    | `tool_recall`, `llm_judge`                               | /       |
+| `deepsearchqa`       | Tool    | `deepsearch_match`, `tool_recall`                        | HF [`google/deepsearchqa`](https://huggingface.co/datasets/google/deepsearchqa) |
+| `mmlu`               | QA      | `mc_letter`, `llm_judge`                                 | /       |
+| `gsm8k`              | QA      | `numeric_match`, `llm_judge`                             | /       |
+| `humaneval`          | QA      | `humaneval_pass`                                         | /       |
+| `persistbench`       | QA      | `substring`, `llm_judge`                                 | /       |
+| `gdpval-aa`          | QA      | `llm_judge`                                                | HF [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) |
+| `gpqa`               | QA      | `mc_letter`, `llm_judge`                                 | /       |
+| `mmlu-pro`           | QA      | `mc_letter`, `llm_judge`                                 | /       |
+| `arc-challenge`      | QA      | `mc_letter`, `llm_judge`                                 | /       |
+| `truthfulqa`         | QA      | `mc_letter`, `llm_judge`                                 | /       |
+| `agieval`            | QA      | `mc_letter`, `llm_judge`                                 | /       |
+| `commonsenseqa`      | QA      | `mc_letter`, `llm_judge`                                 | /       |
+| `hellaswag`          | QA      | `mc_letter`, `llm_judge`                                 | /       |
+| `openbookqa`         | QA      | `mc_letter`, `llm_judge`                                 | /       |
+| `bbh`                | QA      | `exact_match`, `llm_judge`                               | /       |
+| `math`               | QA      | `numeric_match`, `llm_judge`                             | /       |
+| `swe-bench-lite`     | Sandbox | `swe_resolved`, `swe_fail_to_pass`, `swe_pass_to_pass` | ✅      |
+| `swe-bench-verified` | Sandbox | `swe_resolved`, `swe_fail_to_pass`, `swe_pass_to_pass` | ✅      |
+| `swe-bench-pro`      | Sandbox | `swe_resolved`, `swe_fail_to_pass`, `swe_pass_to_pass` | ✅      |
+| `terminal-bench-2`   | Sandbox | `tb_resolved`                                              | ✅      |
+| `terminal-bench-2.1` | Sandbox | `tb_resolved`                                              | ✅      |
 
 ### Agent Harnesses
 
 All supported agent harnesses are auto-instrumented. Select one with `--agent`:
 
-| `--agent` | Harness |
-|-----------|---------|
-| `agno` | Agno |
-| `smolagents` | smolagents |
-| `llama-index` | LlamaIndex |
-| `langgraph` | LangGraph |
-| `crewai` | CrewAI |
-| `google-adk` | Google ADK |
+| `--agent`           | Harness           |
+| --------------------- | ----------------- |
+| `agno`              | Agno              |
+| `smolagents`        | smolagents        |
+| `llama-index`       | LlamaIndex        |
+| `langgraph`         | LangGraph         |
+| `crewai`            | CrewAI            |
+| `google-adk`        | Google ADK        |
 | `autogen-agentchat` | AutoGen AgentChat |
-| `claude-sdk` | Claude Agent SDK |
-| `openai-agents` | OpenAI Agents SDK |
+| `claude-sdk`        | Claude Agent SDK  |
+| `openai-agents`     | OpenAI Agents SDK |
 
 Implementation and OpenInference instrumentor paths are listed under
 [Capture trajectories](#3-capture-trajectories).
@@ -175,17 +200,17 @@ traces. You do not need a separate capture step for supported harnesses.
 
 Supported auto-instrumented agent harnesses:
 
-| `--agent` | Harness package | OpenInference instrumentor |
-|-----------|-----------------|----------------------------|
-| <a id="harness-agno"></a>`agno` | `task/agents/agno` | `monitor/instrumentation/openinference-instrumentation-agno` |
-| <a id="harness-smolagents"></a>`smolagents` | `task/agents/smolagents` | `monitor/instrumentation/openinference-instrumentation-smolagents` |
-| <a id="harness-llama-index"></a>`llama-index` | `task/agents/llama_index` | `monitor/instrumentation/openinference-instrumentation-llama-index` |
-| <a id="harness-langgraph"></a>`langgraph` | `task/agents/langgraph` | `monitor/instrumentation/openinference-instrumentation-langchain` |
-| <a id="harness-crewai"></a>`crewai` | `task/agents/crewai` | `monitor/instrumentation/openinference-instrumentation-crewai` |
-| <a id="harness-google-adk"></a>`google-adk` | `task/agents/google_adk` | `monitor/instrumentation/openinference-instrumentation-google-adk` |
+| `--agent`                                                 | Harness package                   | OpenInference instrumentor                                                  |
+| ----------------------------------------------------------- | --------------------------------- | --------------------------------------------------------------------------- |
+| <a id="harness-agno"></a>`agno`                           | `task/agents/agno`              | `monitor/instrumentation/openinference-instrumentation-agno`              |
+| <a id="harness-smolagents"></a>`smolagents`               | `task/agents/smolagents`        | `monitor/instrumentation/openinference-instrumentation-smolagents`        |
+| <a id="harness-llama-index"></a>`llama-index`             | `task/agents/llama_index`       | `monitor/instrumentation/openinference-instrumentation-llama-index`       |
+| <a id="harness-langgraph"></a>`langgraph`                 | `task/agents/langgraph`         | `monitor/instrumentation/openinference-instrumentation-langchain`         |
+| <a id="harness-crewai"></a>`crewai`                       | `task/agents/crewai`            | `monitor/instrumentation/openinference-instrumentation-crewai`            |
+| <a id="harness-google-adk"></a>`google-adk`               | `task/agents/google_adk`        | `monitor/instrumentation/openinference-instrumentation-google-adk`        |
 | <a id="harness-autogen-agentchat"></a>`autogen-agentchat` | `task/agents/autogen_agentchat` | `monitor/instrumentation/openinference-instrumentation-autogen-agentchat` |
-| <a id="harness-claude-sdk"></a>`claude-sdk` | `task/agents/claude_sdk` | `monitor/instrumentation/openinference-instrumentation-anthropic` |
-| <a id="harness-openai-agents"></a>`openai-agents` | `task/agents/openai_agents` | `monitor/instrumentation/openinference-instrumentation-openai-agents` |
+| <a id="harness-claude-sdk"></a>`claude-sdk`               | `task/agents/claude_sdk`        | `monitor/instrumentation/openinference-instrumentation-anthropic`         |
+| <a id="harness-openai-agents"></a>`openai-agents`         | `task/agents/openai_agents`     | `monitor/instrumentation/openinference-instrumentation-openai-agents`     |
 
 Shared OpenInference plumbing also lives under `monitor/openinference-instrumentation`
 and `monitor/openinference-semantic-conventions`. Wiring is selected via
@@ -219,15 +244,15 @@ uv run python ../eval/scripts/run_eval.py \
 
 ### Run one metric group
 
-| Part | What it scores |
-|------|----------------|
-| `plan` | Planning quality and decision-making |
-| `skill` | Execution skill (e.g. conciseness) |
-| `memory` | Memory / faithfulness |
-| `tool` | Tool selection and execution |
-| `correct` | Final task correctness |
-| `efficiency` | Tokens, cost, turns, latency |
-| `safety` | Safety-related behaviors |
+| Part           | What it scores                       |
+| -------------- | ------------------------------------ |
+| `plan`       | Planning quality and decision-making |
+| `skill`      | Execution skill (e.g. conciseness)   |
+| `memory`     | Memory / faithfulness                |
+| `tool`       | Tool selection and execution         |
+| `correct`    | Final task correctness               |
+| `efficiency` | Tokens, cost, turns, latency         |
+| `safety`     | Safety-related behaviors             |
 
 ```bash
 cd server
@@ -265,7 +290,7 @@ Or use `a2e serve --dev` for Vite HMR via the server templates.
 
 ```
 AEP/
-├── scripts/             # One-click install + server start
+├── scripts/             # Install + server start; official n=1 / full-split runners
 ├── task/                # Build experiments (datasets, agents, runners)
 ├── monitor/             # Capture trajectories (auto-instrumentation)
 ├── eval/                # Score results (process and outcomes)

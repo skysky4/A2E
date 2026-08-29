@@ -63,6 +63,9 @@ def setup_instrumentation(
     Returns:
         The configured ``TracerProvider`` (already set as global).
     """
+    from ageneval.task.core.openai_compat import install_openai_compat
+
+    install_openai_compat()
     endpoint = endpoint or os.environ.get(
         "A2E_COLLECTOR_ENDPOINT", "http://127.0.0.1:6006"
     )
@@ -77,7 +80,7 @@ def setup_instrumentation(
     resource = Resource.create(resource_attrs)
 
     provider = TracerProvider(resource=resource)
-    exporter = OTLPSpanExporter(endpoint=traces_url)
+    exporter = OTLPSpanExporter(endpoint=traces_url, timeout=10)
     processor_cls = BatchSpanProcessor if batch else SimpleSpanProcessor
     provider.add_span_processor(processor_cls(exporter))
 
@@ -99,10 +102,16 @@ def _install_instrumentor(framework: Framework, provider: TracerProvider) -> Non
     try:
         module = importlib.import_module(module_path)
     except ImportError as exc:
-        raise RuntimeError(
-            f"Instrumentor for {framework!r} not importable ({module_path}); "
-            "the vendored monitor package may be missing from the workspace."
-        ) from exc
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Instrumentor for %r not importable (%s: %s). "
+            "Continuing without that instrumentor so the experiment can still run.",
+            framework,
+            module_path,
+            exc,
+        )
+        return
     getattr(module, class_name)().instrument(tracer_provider=provider)
 
 

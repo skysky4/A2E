@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterator, Sequence
 
 from ageneval.task.core.dataset import Dataset, TaskInput
@@ -31,6 +32,11 @@ _HF_ID = "openai/gdpval"
 
 # Cap how much rubric text we stash into expected_outputs (the LLM judge hint).
 _MAX_RUBRIC_CHARS = 6000
+_MAX_ATTACH_CHARS = 12000
+_ATTACH_DIR = Path(
+    os.environ.get("A2E_GDPVAL_FILES_DIR")
+    or (Path.home() / ".cache" / "a2e" / "gdpval-files")
+)
 
 
 @dataclass
@@ -57,9 +63,76 @@ def _file_names(raw: object) -> list[str]:
     return out
 
 
-def _build_instruction(prompt: str, ref_names: list[str]) -> str:
-    """Compose the agent instruction from the task prompt + attachment note."""
+def _extract_file_text(path: Path, *, limit: int = _MAX_ATTACH_CHARS) -> str:
+    """Best-effort text extraction from an office/text attachment."""
+    suffix = path.suffix.lower()
+    try:
+        if suffix in {".txt", ".md", ".csv", ".tsv", ".json", ".py", ".xml", ".html"}:
+            return path.read_text(encoding="utf-8", errors="replace")[:limit]
+        if suffix in {".xlsx", ".xlsm", ".xls"}:
+            try:
+                import openpyxl  # type: ignore
+            except ImportError:
+                return f"[xlsx present at {path} but openpyxl is not installed]"
+            wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
+            chunks: list[str] = []
+            for sheet in wb.worksheets:
+                chunks.append(f"# sheet {sheet.title}")
+                for row in sheet.iter_rows(values_only=True):
+                    cells = ["" if c is None else str(c) for c in row]
+                    if any(cells):
+                        chunks.append("\t".join(cells))
+                    if sum(len(x) for x in chunks) >= limit:
+                        break
+            return "\n".join(chunks)[:limit]
+        if suffix == ".pdf":
+            try:
+                from pypdf import PdfReader  # type: ignore
+            except ImportError:
+                return f"[pdf present at {path} but pypdf is not installed]"
+            reader = PdfReader(str(path))
+            text = "\n".join((page.extract_text() or "") for page in reader.pages)
+            return text[:limit]
+    except Exception as exc:  # noqa: BLE001
+        return f"[failed to extract {path.name}: {exc}]"[:200]
+    return f"[binary attachment {path.name} ({path.stat().st_size} bytes) saved at {path}]"
+
+
+def _fetch_reference_file(rel_path: str) -> Path | None:
+    """Resolve a GDPval reference file from the local cache or the Hub."""
+    rel = str(rel_path).lstrip("/")
+    local = _ATTACH_DIR / rel
+    if local.is_file():
+        return local
+    if os.environ.get("A2E_GDPVAL_FILES", "1") == "0":
+        return None
+    try:
+        from huggingface_hub import hf_hub_download  # type: ignore
+
+        path = hf_hub_download(
+            repo_id=_HF_ID,
+            repo_type="dataset",
+            filename=rel,
+            local_dir=str(_ATTACH_DIR),
+        )
+        fetched = Path(path)
+        return fetched if fetched.is_file() else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("GDPval attachment %s unavailable (%s)", rel, str(exc)[:160])
+        return None
+
+
+def _build_instruction(prompt: str, ref_names: list[str], excerpts: list[tuple[str, str]]) -> str:
+    """Compose the agent instruction from the task prompt + attachments."""
     instruction = prompt.strip()
+    if excerpts:
+        blocks = []
+        for name, text in excerpts:
+            blocks.append(f"----- {name} -----\n{text}")
+        instruction += (
+            "\n\n[Attached input file contents]\n" + "\n\n".join(blocks)
+        )
+        return instruction
     if ref_names:
         listed = "\n".join(f"  - {n}" for n in ref_names)
         instruction += (
@@ -70,6 +143,34 @@ def _build_instruction(prompt: str, ref_names: list[str]) -> str:
             "produce the most complete, professional deliverable you can."
         )
     return instruction
+
+
+def _local_gdpval_parquets() -> list[Path]:
+    """Optional local parquet: ``A2E_GDPVAL_PARQUET`` or the HuggingFace hub cache."""
+    paths: list[Path] = []
+    env = os.environ.get("A2E_GDPVAL_PARQUET")
+    if env:
+        paths.append(Path(env))
+    hf_home = Path(os.environ.get("HF_HOME") or (Path.home() / ".cache" / "huggingface"))
+    hub = hf_home / "hub" / "datasets--openai--gdpval"
+    if hub.is_dir():
+        paths.extend(sorted(hub.glob("snapshots/*/data/train-*.parquet")))
+    return paths
+
+
+def _load_gdpval_split(split: str):
+    """Prefer a local parquet so workers do not hit the HuggingFace Hub."""
+    for path in _local_gdpval_parquets():
+        resolved = path.resolve() if path.exists() else None
+        if resolved is None or not resolved.is_file():
+            continue
+        import pyarrow.parquet as pq
+
+        logger.info("GDPval loader: local parquet %s", resolved)
+        return pq.read_table(resolved).to_pylist()
+    from datasets import load_dataset  # Hub fallback only
+
+    return load_dataset(_HF_ID, split=split, streaming=False)
 
 
 def load_gdpval_tasks(split: str = "train", n: int | None = 5) -> GDPvalDataset:
@@ -88,27 +189,36 @@ def load_gdpval_tasks(split: str = "train", n: int | None = 5) -> GDPvalDataset:
         Exception: HuggingFace download / gated-access failures propagate so the
             caller (test / eval layer) can skip.
     """
-    from datasets import load_dataset  # local import: only loading needs HF
-
-    ds = load_dataset(_HF_ID, split=split, streaming=False)
+    ds = _load_gdpval_split(split)
     tasks: list[TaskInput] = []
     for i, row in enumerate(ds):
         if n is not None and i >= n:
             break
         prompt = str(row.get("prompt", "") or "")
         rubric = str(row.get("rubric_pretty", "") or "")[:_MAX_RUBRIC_CHARS]
-        ref_names = _file_names(row.get("reference_files"))
+        ref_rels = [str(p) for p in (row.get("reference_files") or [])]
+        ref_names = _file_names(ref_rels)
+        excerpts: list[tuple[str, str]] = []
+        local_paths: list[str] = []
+        for rel in ref_rels:
+            fetched = _fetch_reference_file(rel)
+            if fetched is None:
+                continue
+            local_paths.append(str(fetched))
+            excerpts.append((os.path.basename(rel), _extract_file_text(fetched)))
         task_id = str(row.get("task_id") or f"gdpval-{i:04d}")
         tasks.append(
             TaskInput(
                 task_id=task_id,
-                instruction=_build_instruction(prompt, ref_names),
+                instruction=_build_instruction(prompt, ref_names, excerpts),
+                initial_state={"reference_files": local_paths, "reference_names": ref_names},
                 expected_outputs=(rubric,) if rubric else (),
                 metadata={
-                    "dataset": "gdpval",
+                    "dataset": "gdpval-aa",
                     "sector": str(row.get("sector", "")),
                     "occupation": str(row.get("occupation", "")),
                     "n_reference_files": len(ref_names),
+                    "n_attachments_loaded": len(excerpts),
                 },
             )
         )

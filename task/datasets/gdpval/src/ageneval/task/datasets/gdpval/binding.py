@@ -28,7 +28,7 @@ _SYSTEM_PROMPT = (
 def build_gdpval_binding() -> AgentBinding:
     """Return a tool-less ``AgentBinding`` for GDPval deliverable generation."""
     return AgentBinding(
-        name="gdpval",
+        name="gdpval-aa",
         tool_schemas=(),
         tool_executor=lambda *_, **__: {},  # never called (no tools)
         system_prompt_builder=lambda _: _SYSTEM_PROMPT,

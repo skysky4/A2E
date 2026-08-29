@@ -10,19 +10,25 @@ out of here — smolagents builds them automatically from each
 from __future__ import annotations
 
 
+_FALLBACK = (
+    "Follow the user task. When you have the answer, call final_answer. "
+    "Do not leave the final answer empty."
+)
+
+
 def build_additional_instructions(binding_prompt: str) -> str:
-    """Trim the binding's system prompt down to the dataset-specific bits.
+    """Dataset policy for smolagents ``instructions`` — never empty.
 
     The binding's full prompt typically appends an inline tool catalog (so
     that bare LLM agents can still use the tools without an MCP server).
     smolagents already exposes the tools natively, so the catalog would be
     duplicate noise. We keep the textual policy preamble and drop the
-    "AVAILABLE TOOLS:" block.
+    "AVAILABLE TOOLS:" block. If that would wipe the prompt, keep the
+    original text so the system prompt is never blank.
     """
-    if not binding_prompt:
-        return ""
+    raw = (binding_prompt or "").strip()
+    if not raw:
+        return _FALLBACK
     marker = "AVAILABLE TOOLS:"
-    head = binding_prompt.split(marker, 1)[0].strip()
-    if not head:
-        return binding_prompt.strip()
-    return head
+    head = raw.split(marker, 1)[0].strip()
+    return head or raw or _FALLBACK

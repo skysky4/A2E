@@ -26,7 +26,7 @@ required-version = ">=0.10.9"
 # NOTE: task/uv.lock is reused from the pre-restructure single-workspace lock
 # (same package graph; only the editable member paths were re-rooted to this
 # task/ dir). It is installed with `uv sync --frozen` so uv does NOT re-resolve
-# against the pjlab mirror, which reliably 504s on macOS arm64 wheels (e.g.
+# against a restricted PyPI mirror, which reliably 504s on macOS arm64 wheels (e.g.
 # claude-agent-sdk, nodejs-wheel-binaries) that the universal resolver would
 # otherwise fetch metadata for. To regenerate from scratch, run `uv lock` from a
 # host whose PyPI mirror can serve those wheels.
@@ -78,6 +78,7 @@ members = [
   "datasets/persistbench",
   "datasets/qa_suite",
   "datasets/traject_bench",
+  "datasets/deepsearchqa",
   "datasets/swe_bench",
   "datasets/swe_bench_pro",
   "datasets/gdpval",
@@ -127,6 +128,7 @@ ageneval-task-humaneval = { workspace = true }
 ageneval-task-persistbench = { workspace = true }
 ageneval-task-qa-suite = { workspace = true }
 ageneval-task-traject-bench = { workspace = true }
+ageneval-task-deepsearchqa = { workspace = true }
 ageneval-task-swe-bench = { workspace = true }
 ageneval-task-swe-bench-pro = { workspace = true }
 ageneval-task-gdpval = { workspace = true }
@@ -166,7 +168,7 @@ strict_optional = true
 exclude = ["vendor/", "_generated/", "__generated__/"]
 
 [tool.pytest.ini_options]
-testpaths = ["../monitor", "../eval", ".", "../test/mingxuan"]
+testpaths = ["../monitor", "../eval", "."]
 asyncio_mode = "auto"
 filterwarnings = [
   "ignore::DeprecationWarning",

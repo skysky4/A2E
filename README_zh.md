@@ -41,6 +41,7 @@ A<sup>2</sup>E 与 harness、模型厂商无关，对主流 agent SDK（[OpenAI 
 
 ## 🎉 更新日志
 
+- **2026-08-29** — 新增 DeepSearchQA（`deepsearchqa`）、官方评测脚本（`scripts/run_n1.sh`、`scripts/run_full.sh`）以及 GDPval-AA（`gdpval-aa`）。
 - **2026-08-12** — 🤗 论文页面已上线 [Hugging Face](https://huggingface.co/papers/2608.07346)。
 - **2026-08-11** — 📓 [Colab quickstart notebook](https://colab.research.google.com/github/stevewithjobs/AEP/blob/yuchenyue/notebooks/a2e_quickstart.ipynb) 已发布，可在浏览器中端到端跑通 A<sup>2</sup>E。
 - **2026-08-10** — ✨✨ A<sup>2</sup>E 完整代码库已发布。
@@ -71,15 +72,22 @@ cp .env.example .env
 # 终端 1 — 保持服务运行
 bash scripts/start.sh                 # → http://localhost:6006
 
-# 终端 2
+# 终端 2 — 示例单格（τ-bench × agno）
 bash task/run_experiment.sh
+
+# 官方 n=1 / 全量 split（评测器、seed、各数据集预算）
+bash scripts/run_n1.sh <agent> <dataset>
+bash scripts/run_full.sh <agent> <dataset>
+# 例如 bash scripts/run_n1.sh agno tau-bench
+#      bash scripts/run_n1.sh langgraph deepsearchqa
+#      bash scripts/run_full.sh llama-index gdpval-aa
 ```
 
 也可走交互式示例：`bash example/run_examples.sh`。
 
 ### CLI
 
-自定义实验需在 `task/` 目录下运行：
+自定义实验在 `task/` 下运行：
 
 ```bash
 cd task
@@ -87,10 +95,11 @@ uv run --frozen python examples/run_experiment.py \
   --dataset <数据集> \
   --agent   <框架>           # 默认 agno
   --model   <模型>           # 默认读 .env 的 A2E_MODEL
-  --evaluators <a,b,...>     # 默认 exact_match,substring
+  --evaluators <a,b,...>     # 默认用数据集预设
   --n       <样本数>         # 默认 40
-  --sample-seed 20260721     # 可选，固定抽样
-  --domain  retail           # 仅 tau-bench / tau2
+  --full                     # 跑官方 split，忽略 --n
+  --sample-seed 20260816 \
+  --domain  retail           # tau-bench / tau2 / tau3
 ```
 
 | 旗标 | 作用 |
@@ -101,11 +110,26 @@ uv run --frozen python examples/run_experiment.py \
 | `--model` | 覆盖本次的 `A2E_MODEL` |
 | `--evaluators` | 逗号分隔打分器 |
 | `--n` | 样本数（绝对数量，随机无放回） |
-| `--domain` | `retail` / `airline`（tau-bench / tau2） |
+| `--full` | 跑官方 split（忽略 `--n`） |
+| `--sample-seed` | 可复现抽样（官方格子用 `20260816`） |
+| `--domain` | `retail` / `airline`（tau-bench / tau2 / tau3） |
 
 ```bash
+cd task
 uv run --frozen python examples/run_experiment.py --list
 ```
+
+### 官方格子预算
+
+`scripts/run_n1.sh` 与 `scripts/run_full.sh` 会套用同一套按数据集上限（可用环境变量覆盖）：
+
+| 数据集 | `max_turns` | `max_tokens` | LLM 超时 | wall / deadline |
+|--------|-------------|--------------|----------|-----------------|
+| `tau-bench` / `tau2` / `tau3` | 30 | 4096 | 180s | 1200s / 1100s |
+| `deepsearchqa` | 8 | 4096 | 180s | 720s / 620s |
+| `gdpval-aa` | 8 | 16384 | 600s | 1800s / 1700s |
+
+在 `.env` 中设置 `A2E_MODEL`、`OPENAI_API_KEY`、`OPENAI_API_BASE`。可选的 GDPval 本地路径：`A2E_GDPVAL_FILES_DIR`、`A2E_GDPVAL_PARQUET`。
 
 ### Benchmarks
 
@@ -118,11 +142,12 @@ uv run --frozen python examples/run_experiment.py --list
 | `tau2` | Tool | `tool_recall`, `llm_judge` | / |
 | `tau3` | Tool | `tool_recall`, `llm_judge` | / |
 | `traject-bench` | Tool | `tool_recall`, `llm_judge` | / |
+| `deepsearchqa` | Tool | `deepsearch_match`, `tool_recall` | HF [`google/deepsearchqa`](https://huggingface.co/datasets/google/deepsearchqa) |
 | `mmlu` | QA | `mc_letter`, `llm_judge` | / |
 | `gsm8k` | QA | `numeric_match`, `llm_judge` | / |
-| `humaneval` | QA | `substring`, `llm_judge` | / |
+| `humaneval` | QA | `humaneval_pass` | / |
 | `persistbench` | QA | `substring`, `llm_judge` | / |
-| `gdpval` | QA | `llm_judge` | / |
+| `gdpval-aa` | QA | `llm_judge` | HF [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) |
 | `gpqa` | QA | `mc_letter`, `llm_judge` | / |
 | `mmlu-pro` | QA | `mc_letter`, `llm_judge` | / |
 | `arc-challenge` | QA | `mc_letter`, `llm_judge` | / |
@@ -263,7 +288,7 @@ cd ui && pnpm install && pnpm dev   # http://127.0.0.1:5173  （/v1 代理到 :6
 
 ```
 AEP/
-├── scripts/             # 一键安装并启动服务
+├── scripts/             # 安装并启动服务；官方 n=1 / 全量 split 脚本
 ├── task/                # 构建实验（数据集、agent、runners）
 ├── monitor/             # 捕获轨迹（自动打桩）
 ├── eval/                # 评测打分（过程与结果）

@@ -18,6 +18,7 @@ from ageneval.task.agents.langgraph.nodes import (
     executor_run,
     responder_node,
     router_node,
+    should_stop_tool_loop,
 )
 
 
@@ -52,6 +53,13 @@ def build_tau_graph(*, llm: Any, binding: AgentBinding, max_turns: int = 8) -> A
             return "executor"
         return "responder"
 
+    def _branch_after_executor(state: TauGraphState) -> str:
+        history = list(state.get("tool_calls") or [])
+        turns = int(state.get("turns", 0))
+        if should_stop_tool_loop(history, turns=turns, max_turns=max_turns):
+            return "responder"
+        return "router"
+
     graph = StateGraph(TauGraphState)
     graph.add_node("router", _router)
     graph.add_node("executor", _executor)
@@ -62,7 +70,11 @@ def build_tau_graph(*, llm: Any, binding: AgentBinding, max_turns: int = 8) -> A
         _branch_after_router,
         {"executor": "executor", "responder": "responder"},
     )
-    graph.add_edge("executor", "router")
+    graph.add_conditional_edges(
+        "executor",
+        _branch_after_executor,
+        {"router": "router", "responder": "responder"},
+    )
     graph.add_edge("responder", END)
     return graph.compile()
 

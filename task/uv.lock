@@ -27,6 +27,7 @@ members = [
     "ageneval-task-agent-smolagents",
     "ageneval-task-claude-sdk-agent",
     "ageneval-task-core",
+    "ageneval-task-deepsearchqa",
     "ageneval-task-gdpval",
     "ageneval-task-gsm8k",
     "ageneval-task-humaneval",
@@ -695,6 +696,21 @@ requires-dist = [
     { name = "opentelemetry-sdk", specifier = ">=1.20.0" },
 ]
 provides-extras = ["a2e"]
+
+[[package]]
+name = "ageneval-task-deepsearchqa"
+version = "0.1.0"
+source = { editable = "datasets/deepsearchqa" }
+dependencies = [
+    { name = "ageneval-task-core" },
+    { name = "datasets" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "ageneval-task-core", editable = "packages/ageneval-task-core" },
+    { name = "datasets", specifier = ">=2.14.0" },
+]
 
 [[package]]
 name = "ageneval-task-gdpval"

@@ -33,7 +33,10 @@ class Tau3Dataset(Dataset):
         return len(self.tasks)
 
 
-def load_tau3_tasks(*, n: int | None = None, split: str = "test", domain: str | None = None) -> Tau3Dataset:
+_LIVE_DOMAINS = frozenset({"retail", "airline"})
+
+
+def load_tau3_tasks(*, n: int | None = None, split: str = "test", domain: str | None = "retail") -> Tau3Dataset:
     """Load τ³-bench TEXT tasks (voice modality intentionally excluded).
 
     Args:
@@ -46,8 +49,11 @@ def load_tau3_tasks(*, n: int | None = None, split: str = "test", domain: str | 
         actions.
     """
     rows = VENDOR_TASKS
-    if domain:
-        rows = [t for t in rows if t.get("domain") == domain]
+    resolved = domain or "retail"
+    if resolved == "all":
+        rows = [t for t in rows if t.get("domain") in _LIVE_DOMAINS]
+    else:
+        rows = [t for t in rows if t.get("domain") == resolved]
     rows = rows[: (n or len(rows))]
     tasks = [
         TaskInput(
@@ -66,5 +72,5 @@ def load_tau3_tasks(*, n: int | None = None, split: str = "test", domain: str | 
         )
         for i, t in enumerate(rows)
     ]
-    logger.info("τ³-bench loader: %d text tasks (voice excluded, domain=%s)", len(tasks), domain or "all")
+    logger.info("τ³-bench loader: %d text tasks (voice excluded, domain=%s)", len(tasks), resolved)
     return Tau3Dataset(name="tau3", tasks=tasks)

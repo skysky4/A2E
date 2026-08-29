@@ -32,26 +32,32 @@ def _clean_completion(completion: str) -> str:
     The binding asks the model for a bare function body, but defensively recover
     the code when a model wraps it in a JSON object or a ```python fence.
     """
-    text = (completion or "").strip()
-    if not text:
+    text = completion or ""
+    if not text.strip():
         return ""
     # Unwrap a JSON {"final_answer": "..."} envelope if the model emitted one.
-    if text.startswith("{") and "final_answer" in text:
+    stripped = text.lstrip()
+    if stripped.startswith("{") and "final_answer" in stripped:
         try:
-            obj = json.loads(text)
+            obj = json.loads(stripped)
             if isinstance(obj, dict) and "final_answer" in obj:
                 text = str(obj["final_answer"])
         except (ValueError, TypeError):
             pass
-    # Strip a ```python ... ``` fence.
+    # Strip a ```python ... ``` fence without dropping function-body indent.
     if text.lstrip().startswith("```"):
-        lines = text.strip().splitlines()
+        lines = text.splitlines()
         if lines and lines[0].lstrip().startswith("```"):
             lines = lines[1:]
         if lines and lines[-1].strip().startswith("```"):
             lines = lines[:-1]
         text = "\n".join(lines)
-    return text
+    lines = text.splitlines()
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines)
 
 
 def build_program(prompt: str, completion: str, test_src: str, entry_point: str) -> str:

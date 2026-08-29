@@ -9,6 +9,7 @@ Schema (per config, e.g. parallel_finance_hard / sequential_travel, split=test):
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -57,6 +58,15 @@ def load_traject_bench_tasks(
     n: int | None = None, split: str = "test", *, hf_id: str | None = _HF_ID, config: str | None = None
 ) -> TrajectBenchDataset:
     """Load traject-bench (full set across all configs; ``n`` caps)."""
+    import os
+
+    # Official TRAJECT-Bench configs expose per-task domain APIs that are not
+    # the local 5-tool assistant-utilities executor. Default to the vendored
+    # tasks so harness schema tests actually match the bound tools. Set
+    # A2E_TRAJECT_HF=1 to force the Hugging Face dump.
+    if os.environ.get("A2E_TRAJECT_HF", "0") != "1":
+        logger.info("traject-bench: using vendor tasks (set A2E_TRAJECT_HF=1 for HF)")
+        return _vendor_dataset(n)
     if hf_id:
         try:
             from datasets import get_dataset_config_names, load_dataset
@@ -76,24 +86,34 @@ def load_traject_bench_tasks(
                 if not configs or configs == ["default"]:
                     configs = list(_CONFIGS)
             tasks: list[TaskInput] = []
+            hub_failed = False
             for cfg in configs:
                 if n is not None and len(tasks) >= n:
+                    break
+                if hub_failed:
                     break
                 try:
                     ds = load_dataset(hf_id, cfg, split=split)
                 except Exception as exc:
-                    logger.warning("traject-bench: config %s unavailable (%s); skipping", cfg, str(exc)[:80])
+                    logger.warning(
+                        "traject-bench: config %s unavailable (%s); "
+                        "stopping HF load and using vendor if needed",
+                        cfg,
+                        str(exc)[:80],
+                    )
+                    hub_failed = True
                     continue
                 for i, row in enumerate(ds):
                     if n is not None and len(tasks) >= n:
                         break
                     fa = row.get("final_answer")
+                    tool_list = row.get("tool_list", "")
                     tasks.append(
                         TaskInput(
                             task_id=f"traject-{cfg}-{i:04d}",
                             instruction=row.get("query") or row.get("instruction") or "",
-                            initial_state={"tool_list": row.get("tool_list", "")},
-                            expected_actions=(),
+                            initial_state={"tool_list": tool_list},
+                            expected_actions=_expected_actions_from_tool_list(tool_list),
                             expected_outputs=(str(fa),) if fa else (),
                             metadata={"benchmark": "traject-bench", "hf_id": hf_id, "config": cfg,
                                       "trajectory_type": row.get("trajectory_type"), "source": "upstream-full"},
@@ -105,6 +125,36 @@ def load_traject_bench_tasks(
         except Exception as exc:
             logger.warning("traject-bench HF load failed (%s) — falling back to vendor", exc)
     return _vendor_dataset(n)
+
+
+def _expected_actions_from_tool_list(raw: object) -> tuple[dict, ...]:
+    """Turn a TRAJECT-Bench ``tool_list`` field into ``expected_actions``.
+
+    Empty ``expected_actions`` used to make ``tool_recall`` always 1.0.
+    """
+    data: object = raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return ()
+        try:
+            data = json.loads(text)
+        except (ValueError, TypeError):
+            data = [part.strip() for part in text.split(",") if part.strip()]
+    names: list[str] = []
+    if isinstance(data, dict):
+        data = data.get("tools") or data.get("tool_list") or list(data)
+    if isinstance(data, (list, tuple)):
+        for item in data:
+            if isinstance(item, str) and item.strip():
+                names.append(item.strip())
+            elif isinstance(item, dict):
+                name = item.get("name") or item.get("tool") or item.get("function")
+                if isinstance(name, dict):
+                    name = name.get("name")
+                if name:
+                    names.append(str(name))
+    return tuple({"name": n} for n in names)
 
 
 def _vendor_dataset(n: int | None) -> TrajectBenchDataset:

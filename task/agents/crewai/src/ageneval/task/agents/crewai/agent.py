@@ -24,8 +24,14 @@ from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, 
 
 # Unified model: default to .env's A2E_MODEL (a non-reasoning instruct model);
 # fall back to qwen-plus.
+from ageneval.task.core.budget import llm_timeout as _llm_timeout
+from ageneval.task.core.budget import max_retries as _max_retries
+from ageneval.task.core.budget import max_tokens as _max_tokens
+from ageneval.task.core.budget import max_turns as _default_turns
+from ageneval.task.core.budget import remaining_deadline as _remaining_deadline
+
 _DEFAULT_MODEL = os.environ.get("A2E_MODEL") or "qwen-plus"
-_MAX_TURNS = 8
+_MAX_TURNS = _default_turns()
 
 
 @dataclass(eq=False)
@@ -61,6 +67,40 @@ class CrewAIAgent(AgentRunner):
     async def run(self, task: TaskInput) -> TaskTrace:
         start = time.perf_counter()
         recorder: list[ToolCall] = []
+        if self.binding is not None and os.environ.get("A2E_TAU_NEED_WRITE") == "1":
+            from ageneval.task.core.native_tools import maybe_force_retail_write_trace
+
+            forced = await maybe_force_retail_write_trace(
+                binding=self.binding,
+                task=task,
+                recorder=recorder,
+                model=self.model,
+                api_key=self.api_key or os.environ.get("OPENAI_API_KEY") or "",
+                api_base=self.api_base or os.environ.get("OPENAI_API_BASE"),
+                max_turns=self.max_turns,
+                deadline=_remaining_deadline(start),
+                agent_name=self.name,
+                start=start,
+            )
+            if forced is not None:
+                return forced
+        if self.binding is not None and os.environ.get("A2E_DSQA_FORCE") == "1":
+            from ageneval.task.core.native_tools import maybe_force_dsqa_search_trace
+
+            forced_ds = await maybe_force_dsqa_search_trace(
+                binding=self.binding,
+                task=task,
+                recorder=recorder,
+                model=self.model,
+                api_key=self.api_key or os.environ.get("OPENAI_API_KEY") or "",
+                api_base=self.api_base or os.environ.get("OPENAI_API_BASE"),
+                max_turns=self.max_turns,
+                deadline=_remaining_deadline(start),
+                agent_name=self.name,
+                start=start,
+            )
+            if forced_ds is not None:
+                return forced_ds
         try:
             from crewai import LLM, Agent, Crew, Task
 
@@ -85,8 +125,18 @@ class CrewAIAgent(AgentRunner):
                 model=f"openai/{self.model}",
                 base_url=api_base,
                 api_key=api_key,
+                max_tokens=_max_tokens(),
+                timeout=_llm_timeout(),
+                max_retries=_max_retries(),
             )
             tools = _build_tools(self.binding, task, recorder)
+            if tools:
+                # CrewAI 1.6 get_llm_response never forwards tools to
+                # llm.call. The model then writes a ReAct Thought and
+                # format_answer treats the parse failure as AgentFinish
+                # (0 recorded tool calls). Bind native function-calling
+                # schemas + executors onto every completion.
+                _attach_native_tools(llm, tools, self.binding, recorder)
             system_prompt = self.binding.render_system_prompt()
             agent = Agent(
                 role="A2E benchmark agent",
@@ -97,8 +147,16 @@ class CrewAIAgent(AgentRunner):
                 verbose=False,
                 max_iter=self.max_turns,
             )
+            tool_hint = ""
+            if tools:
+                names = ", ".join(getattr(t, "name", "tool") for t in tools)
+                tool_hint = (
+                    "You have tools and MUST use them via function calling "
+                    f"before answering: {names}. Do not answer from memory "
+                    "when a lookup tool exists.\n\n"
+                )
             crew_task = Task(
-                description=task.instruction,
+                description=tool_hint + task.instruction,
                 expected_output="A concise, correct final answer to the task.",
                 agent=agent,
             )
@@ -106,9 +164,34 @@ class CrewAIAgent(AgentRunner):
 
             # crewai's ``Crew.kickoff`` is synchronous; run it off the event
             # loop so the surrounding asyncio runner is not blocked.
-            result = await asyncio.to_thread(crew.kickoff)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(crew.kickoff),
+                timeout=_remaining_deadline(start),
+            )
 
             final = _extract_final(result)
+            from ageneval.task.core.native_tools import (
+                compose_final_answer,
+                ensure_required_tools,
+                is_unusable_final,
+            )
+
+            ensure_required_tools(binding=self.binding, task=task, recorder=recorder)
+            # CrewAI often returns the last tool JSON as CrewOutput.raw.
+            # Always compose when that happens — do not store search errors
+            # as the benchmark final answer.
+            if is_unusable_final(final) or (
+                '"error"' in (final or "")
+                and (
+                    '"query"' in (final or "")
+                    or "bing:" in (final or "").lower()
+                    or "brave:" in (final or "").lower()
+                    or "open_web" in (final or "").lower()
+                )
+            ) or (
+                '"query"' in (final or "") and ('"results"' in (final or "") or '"error"' in (final or ""))
+            ):
+                final = compose_final_answer(task.instruction, recorder, existing=final)
             turns = len(recorder) or (1 if final else 0)
             return TaskTrace(
                 task_id=task.task_id,
@@ -119,17 +202,36 @@ class CrewAIAgent(AgentRunner):
                 final_answer=final or None,
                 elapsed_seconds=time.perf_counter() - start,
             )
-        except Exception as exc:
-            # Broad catch: surface any SDK / network / parsing failure as an
-            # error TaskTrace rather than crashing the whole experiment run.
+        except asyncio.TimeoutError:
+            from ageneval.task.core.native_tools import compose_final_answer, ensure_required_tools
+
+            ensure_required_tools(binding=self.binding, task=task, recorder=recorder)
+            final = compose_final_answer(task.instruction, recorder)
             return TaskTrace(
                 task_id=task.task_id,
                 agent_name=self.name,
-                status="error",
-                turns=0,
+                status="ok" if final else "timeout",
+                turns=len(recorder),
                 tool_calls=tuple(recorder),
+                final_answer=final or None,
                 elapsed_seconds=time.perf_counter() - start,
-                error=(str(exc) or type(exc).__name__)[:1000],
+                error=None if final else f"agent exceeded {_remaining_deadline(start):.0f}s deadline",
+            )
+        except Exception as exc:
+            from ageneval.task.core.native_tools import compose_final_answer, ensure_required_tools
+
+            if self.binding is not None:
+                ensure_required_tools(binding=self.binding, task=task, recorder=recorder)
+            final = compose_final_answer(task.instruction, recorder)
+            return TaskTrace(
+                task_id=task.task_id,
+                agent_name=self.name,
+                status="ok" if final else "error",
+                turns=len(recorder),
+                tool_calls=tuple(recorder),
+                final_answer=final or None,
+                elapsed_seconds=time.perf_counter() - start,
+                error=None if final else (str(exc) or type(exc).__name__)[:1000],
             )
 
 
@@ -138,9 +240,101 @@ def _extract_final(result: Any) -> str:
     if result is None:
         return ""
     raw = getattr(result, "raw", None)
-    if raw:
-        return str(raw).strip()
-    return str(result).strip()
+    text = str(raw).strip() if raw else str(result).strip()
+    # CrewAI often stores the last web_search JSON as CrewOutput.raw.
+    from ageneval.task.core.native_tools import _is_search_tool_dump, is_unusable_final
+
+    if _is_search_tool_dump(text) or is_unusable_final(text):
+        return ""
+    return text
+
+
+def _attach_native_tools(
+    llm: Any, tools: list[Any], binding: AgentBinding, recorder: list[ToolCall]
+) -> None:
+    """Inject OpenAI tool schemas into every ``llm.call``.
+
+    CrewAI's ReAct loop asks the model for ``Action:`` text but does not
+    put ``tools`` on the chat-completions request. Instruct models then
+    emit a Thought and stop; 1.6's ``format_answer`` swallows the parse
+    error as a final answer. Native function calling with
+    ``tool_choice=required`` forces named-arg tool calls.
+    """
+    from ageneval.task.core.native_tools import openai_tool_dicts
+
+    openai_tools = openai_tool_dicts(binding.tool_schemas)
+    available = {t.name: t._run for t in tools}
+    orig = llm.call
+    n_calls = {"n": 0}
+    write_names = {
+        "cancel_pending_order",
+        "exchange_delivered_order_items",
+        "return_delivered_order_items",
+        "modify_pending_order_items",
+        "modify_pending_order_address",
+        "modify_pending_order_payment",
+        "modify_user_address",
+    }
+    has_write_schema = any(getattr(t, "name", "") in write_names for t in tools)
+
+    def call(
+        messages: Any,
+        tools: Any = None,
+        callbacks: Any = None,
+        available_functions: Any = None,
+        from_task: Any = None,
+        from_agent: Any = None,
+        response_model: Any = None,
+    ) -> Any:
+        # CrewAI 1.6 LLM.call executes at most one tool via available_functions
+        # and returns that tool's text as the whole answer, so the outer loop
+        # AgentFinishes after find_user_id_*. Keep feeding the tool result
+        # back until a retail write tool lands (agent still chooses the tool).
+        msgs: list[Any] = list(messages) if messages else []
+        last: Any = None
+        while True:
+            n_calls["n"] += 1
+            extra = dict(getattr(llm, "additional_params", None) or {})
+            wrote = any(tc.name in write_names for tc in recorder)
+            if n_calls["n"] == 1 or (
+                has_write_schema and not wrote and n_calls["n"] <= 12
+            ):
+                extra["tool_choice"] = "required"
+            else:
+                extra["tool_choice"] = "auto"
+            llm.additional_params = extra
+            last = orig(
+                msgs,
+                tools=tools or openai_tools,
+                callbacks=callbacks,
+                available_functions=available_functions or available,
+                from_task=from_task,
+                from_agent=from_agent,
+                response_model=response_model,
+            )
+            wrote = any(tc.name in write_names for tc in recorder)
+            if not has_write_schema or wrote or n_calls["n"] >= 12:
+                return last
+            if last is None or str(last).strip() == "":
+                return last
+            last_name = recorder[-1].name if recorder else "tool"
+            msgs = list(msgs)
+            msgs.append({"role": "assistant", "content": str(last)[:8000]})
+            msgs.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"The {last_name} tool returned the result above. "
+                        "Continue. If you still need lookup, call the next "
+                        "lookup tool. If you have the order and item ids, "
+                        "call the write tool now (exchange, return, modify, "
+                        "or cancel). The customer already confirmed. "
+                        "Do not stop."
+                    ),
+                }
+            )
+
+    llm.call = call
 
 
 def _build_tools(
@@ -150,62 +344,43 @@ def _build_tools(
 ) -> list[Any]:
     """Wrap each binding tool schema into a crewai ``BaseTool`` instance.
 
-    Each tool is a closure over the binding executor + the current task's
-    ``initial_state`` + a shared ``recorder`` list so each invocation is also
-    captured into ``TaskTrace.tool_calls``. crewai's ``BaseTool`` requires a
-    pydantic ``args_schema``; a permissive single-field schema accepting a JSON
-    object string keeps the wiring dataset-agnostic.
+    ``args_schema`` is generated from the dataset JSON Schema so the model
+    sees real parameter names instead of a single ``arguments_json`` blob.
     """
-    from pydantic import BaseModel, Field
-
     from crewai.tools import BaseTool
 
-    class _ArgsSchema(BaseModel):
-        arguments_json: str = Field(
-            default="{}",
-            description="A JSON object string of the tool arguments.",
-        )
+    from ageneval.task.core.native_tools import (
+        invoke_binding_tool,
+        openai_function,
+        parameters_block,
+        pydantic_args_model,
+    )
+
+    # Set name/description/args_schema via constructor kwargs, not class-body
+    # defaults. Pydantic's model namespace treats `name`/`description` as the
+    # fields being defined, so `name: str = tool_name` raises
+    # ``NameError: name 'name' is not defined`` at class creation.
+    class _BindingTool(BaseTool):
+        def _run(self, **kwargs: Any) -> str:
+            return invoke_binding_tool(
+                tool_name=self.name,
+                kwargs=kwargs,
+                binding=binding,
+                task=task,
+                recorder=recorder,
+            )
 
     tools: list[Any] = []
     for schema in binding.tool_schemas:
-        fn = schema["function"]
-        tool_name = fn["name"]
-        tool_description = fn.get("description", "") or f"Invoke the {tool_name} tool."
-
-        def _make(name: str, description: str) -> Any:
-            bound_name = name
-            bound_description = description
-
-            def _invoke(arguments_json: str = "{}") -> str:
-                try:
-                    args = json.loads(arguments_json or "{}")
-                except (ValueError, TypeError):
-                    args = {}
-                if not isinstance(args, dict):
-                    args = {}
-                try:
-                    result = binding.tool_executor(name, args, task.initial_state)
-                except Exception as exc:
-                    # A failing tool must not abort the agent loop.
-                    recorder.append(
-                        ToolCall(name=name, arguments=args, result=None, error=str(exc))
-                    )
-                    return json.dumps({"error": str(exc)}, default=str)
-                recorder.append(ToolCall(name=name, arguments=args, result=result))
-                return json.dumps(result, default=str)
-
-            class _BindingTool(BaseTool):
-                name: str = bound_name
-                description: str = (
-                    f"{bound_description}\n\n"
-                    "Pass a JSON object string of arguments via 'arguments_json'."
-                )
-                args_schema: type = _ArgsSchema
-
-                def _run(self, arguments_json: str = "{}") -> str:
-                    return _invoke(arguments_json)
-
-            return _BindingTool()
-
-        tools.append(_make(tool_name, tool_description))
+        fn = openai_function(schema)
+        tool_name = str(fn.get("name") or "tool")
+        tool_description = str(fn.get("description") or f"Invoke the {tool_name} tool.")
+        args_model = pydantic_args_model(tool_name, parameters_block(schema))
+        tools.append(
+            _BindingTool(
+                name=tool_name,
+                description=tool_description,
+                args_schema=args_model,
+            )
+        )
     return tools

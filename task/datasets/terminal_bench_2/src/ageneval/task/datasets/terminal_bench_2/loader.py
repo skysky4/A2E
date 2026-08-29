@@ -167,16 +167,18 @@ def load_terminal_bench_2_tasks(
     else:
         built = [(t, _safe_build(base / t)) for t in available]
         built = [(t, ti) for t, ti in built if ti is not None]
-        # Prefer locally-cached images so a no-pin run avoids a fresh multi-GB pull.
-        if n is not None:
-            local = _local_images()
-            if local:
-                cached = [(t, ti) for t, ti in built if str(ti.metadata.get("tb_image")) in local]
-                rest = [(t, ti) for t, ti in built if str(ti.metadata.get("tb_image")) not in local]
-                if cached:
-                    logger.info("terminal-bench-2: preferring locally-cached task(s): %s",
-                                [t for t, _ in cached][:n])
-                    built = cached + rest
+        # Prefer locally-cached images so a no-pin run avoids a fresh multi-GB pull
+        # (the docker daemon proxy here cannot reach registry-1.docker.io).
+        local = _local_images()
+        if local:
+            cached = [(t, ti) for t, ti in built if str(ti.metadata.get("tb_image")) in local]
+            rest = [(t, ti) for t, ti in built if str(ti.metadata.get("tb_image")) not in local]
+            if cached:
+                logger.info(
+                    "terminal-bench-2: preferring locally-cached task(s): %s",
+                    [t for t, _ in cached][: (n or 8)],
+                )
+                built = cached + rest
         if n is not None:
             built = built[:n]
 
