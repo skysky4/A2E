@@ -11,6 +11,13 @@ from ageneval.task.core.budget import (
     run_deadline,
 )
 from ageneval.task.core.dataset import Dataset, TaskInput
+from ageneval.task.core.grading import (
+    GradeReport,
+    GraderSpec,
+    normalize_grade,
+    platform_evaluator,
+    run_grader,
+)
 from ageneval.task.core.instrumentation import setup_instrumentation
 from ageneval.task.core.native_tools import (
     attach_json_schema_signature,
@@ -32,6 +39,8 @@ __all__ = [
     "AgentRunner",
     "Dataset",
     "ExperimentRunner",
+    "GradeReport",
+    "GraderSpec",
     "SandboxScoringRunner",
     "SystemPromptBuilder",
     "TaskInput",
@@ -47,10 +56,13 @@ __all__ = [
     "max_steps",
     "max_tokens",
     "max_turns",
+    "normalize_grade",
     "openai_tool_dicts",
     "parameters_block",
     "pydantic_args_model",
+    "platform_evaluator",
     "run_deadline",
+    "run_grader",
     "run_sync_in_daemon_thread",
     "schema_is_empty",
     "setup_instrumentation",

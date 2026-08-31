@@ -9,10 +9,6 @@ benchmarks:
     sample:
       n: 10
       seed: 20260822
-    graders:
-      - id: mc_letter
-        mode: posthoc
-        required: true
 
 harnesses:
   - langgraph

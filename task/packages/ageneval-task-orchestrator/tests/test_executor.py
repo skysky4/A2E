@@ -19,6 +19,8 @@ from opentelemetry.sdk.trace import TracerProvider
 
 
 def test_trial_executor_runs_agent_grader_and_releases_all_permits(monkeypatch) -> None:
+    import ageneval.task.runners as runners
+    from ageneval.task.core import GraderSpec
     from ageneval.task.runners import AGENTS, DATASETS
 
     class Agent:
@@ -42,6 +44,17 @@ def test_trial_executor_runs_agent_grader_and_releases_all_permits(monkeypatch) 
         DATASETS,
         "fake-benchmark",
         {"bind": lambda **_kwargs: object(), "kind": "qa"},
+    )
+    monkeypatch.setattr(
+        runners,
+        "grader_for_dataset",
+        lambda _dataset: GraderSpec(
+            id="exact_match",
+            grade=lambda output, expected: float(
+                output.get("final_answer")
+                == (expected.get("expected_outputs") or [None])[0]
+            ),
+        ),
     )
     profile = ModelProfile.model_validate(
         {

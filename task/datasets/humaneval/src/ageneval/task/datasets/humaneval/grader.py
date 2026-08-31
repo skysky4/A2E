@@ -19,7 +19,11 @@ import logging
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
+
+from ageneval.task.core.grading import GradeReport, GraderSpec
 
 logger = logging.getLogger(__name__)
 
@@ -122,3 +126,52 @@ def score_humaneval_state(final_answer: str, initial_state: dict, *, timeout: in
         entry_point=str(initial_state.get("entry_point", "")),
         timeout=timeout,
     )
+
+
+def grade_humaneval(
+    output: Any,
+    expected: Any = None,
+    input: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> GradeReport:
+    """Adapt the existing execution scorer to the benchmark grading contract."""
+    del expected, metadata
+    if isinstance(output, Mapping):
+        completion = output.get("final_answer", output.get("answer", ""))
+    else:
+        completion = output
+    raw_state = (input or {}).get("initial_state") or {}
+    state = dict(raw_state) if isinstance(raw_state, Mapping) else {}
+    result = score_humaneval_state(str(completion or ""), state)
+    passed = bool(result.get("passed"))
+    score = float(passed)
+    return GradeReport(
+        score=score,
+        passed=passed,
+        metrics={"humaneval_pass": score},
+        metadata={"execution_error": result.get("error")},
+        explanation="HumanEval pass@1 from execution against the benchmark tests.",
+        official=True,
+        source="openai/openai_humaneval",
+        version="pass@1",
+    )
+
+
+GRADER = GraderSpec(
+    id="humaneval_pass",
+    grade=grade_humaneval,
+    mode="posthoc",
+    official=True,
+    source="openai/openai_humaneval",
+    version="pass@1",
+)
+grade = grade_humaneval
+
+__all__ = [
+    "GRADER",
+    "build_program",
+    "grade",
+    "grade_humaneval",
+    "run_humaneval_pass",
+    "score_humaneval_state",
+]

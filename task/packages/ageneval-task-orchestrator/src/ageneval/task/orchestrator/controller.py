@@ -178,7 +178,12 @@ class CampaignController:
         )
 
     def prepare(self) -> CampaignPlan:
-        from ageneval.task.runners import AGENTS, DATASETS, sample_dataset
+        from ageneval.task.runners import (
+            AGENTS,
+            DATASETS,
+            grader_for_dataset,
+            sample_dataset,
+        )
 
         unknown_benchmarks = {item.id for item in self.config.benchmarks} - set(DATASETS)
         unknown_harnesses = set(self.config.harnesses) - set(AGENTS)
@@ -251,13 +256,29 @@ class CampaignController:
                 }
             selected_ids[benchmark.id] = [task.task_id for task in selected_tasks]
             self.tasks[benchmark.id] = [_task_payload(task) for task in selected_tasks]
-            graders = benchmark.graders or [
-                GraderConfig(
-                    id=name,
-                    mode="inline" if ds_entry.get("kind") == "sandbox" else "posthoc",
+            spec = grader_for_dataset(benchmark.id)
+            configured = list(benchmark.graders)
+            if len(configured) > 1:
+                raise ValueError(
+                    f"benchmark {benchmark.id!r} owns one primary grader; "
+                    "multiple graders are no longer supported"
                 )
-                for name in ds_entry.get("default_evaluators", [])
-            ]
+            if configured:
+                grader = configured[0]
+                accepted_ids = {spec.id, *spec.aliases}
+                if grader.id not in accepted_ids:
+                    raise ValueError(
+                        f"benchmark {benchmark.id!r} uses grader {spec.id!r}; "
+                        f"configured id {grader.id!r} is not compatible"
+                    )
+                grader = grader.model_copy(update={"id": spec.id, "mode": spec.mode})
+            else:
+                grader = GraderConfig(
+                    id=spec.id,
+                    mode=spec.mode,
+                    required=spec.required,
+                )
+            graders = [grader]
             self.benchmarks[benchmark.id] = {
                 **benchmark.model_dump(mode="json"),
                 "graders": [grader.model_dump(mode="json") for grader in graders],
@@ -1516,6 +1537,7 @@ class CampaignController:
                 grades = [
                     await _run_grader(
                         grader,
+                        benchmark_id=cell.benchmark,
                         task=task,
                         output=result.output,
                         trace_id=result.trace_id,

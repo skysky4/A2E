@@ -71,7 +71,7 @@ Pick a dataset and an agent harness, then run:
 # Terminal 1 — keep the server up
 bash scripts/start.sh                 # → http://localhost:6006
 
-# Terminal 2 — one official n=1 cell (evaluators + seed per dataset)
+# Terminal 2 — one official n=1 cell (automatic grader + seed per dataset)
 # source scripts/a2e_net.sh             # autogen-agentchat: source scripts/autogen_env.sh
 bash scripts/run_n1.sh <agent> <dataset>
 # e.g. bash scripts/run_n1.sh agno tau-bench
@@ -92,7 +92,6 @@ cd task
   --dataset <dataset> \
   --agent   <framework>      # default: agno
   --model   kimi/kimi-k3 \
-  --evaluators <a,b,...>     # see table below; run_n1.sh sets this
   --n       1 \
   --sample-seed 20260816 \
   --domain  retail           # tau-bench / tau2 / tau3
@@ -100,11 +99,10 @@ cd task
 
 | Flag             | Purpose                                                  |
 | ---------------- | -------------------------------------------------------- |
-| `--list`       | Print all datasets / agent harnesses / evaluators        |
+| `--list`       | Print all datasets / agent harnesses / graders           |
 | `--dataset`    | Dataset name (required)                                  |
 | `--agent`      | Agent harness (default`agno`)                          |
 | `--model`      | Override`A2E_MODEL` for this run                       |
-| `--evaluators` | Comma-separated scorers                                  |
 | `--n`          | Sample size (absolute count, random without replacement) |
 | `--domain`     | `retail` / `airline` (tau-bench / tau2)              |
 
@@ -116,35 +114,35 @@ cd task
 
 ### Benchmarks
 
-Each benchmark includes a built-in evaluator preset. Use `--evaluators` to override
-it; use `--list` to inspect every available benchmark, harness, and evaluator.
+Each benchmark owns one primary grader, which is selected and run automatically.
+Use `--list` to inspect every available benchmark, harness, and grader.
 
-| Benchmark              | Kind    | Built-in default evaluators                                  | Sandbox |
-| ---------------------- | ------- | ------------------------------------------------------------ | ------- |
-| `tau-bench`          | Tool    | `tool_recall`, `llm_judge`                               | /       |
-| `tau2`               | Tool    | `tool_recall`, `llm_judge`                               | /       |
-| `tau3`               | Tool    | `tool_recall`, `llm_judge`                               | /       |
-| `traject-bench`      | Tool    | `tool_recall`, `llm_judge`                               | /       |
-| `mmlu`               | QA      | `mc_letter`, `llm_judge`                                 | /       |
-| `gsm8k`              | QA      | `numeric_match`, `llm_judge`                             | /       |
-| `humaneval`          | QA      | `substring`, `llm_judge`                                 | /       |
-| `persistbench`       | QA      | `substring`, `llm_judge`                                 | /       |
-| `gdpval-aa`          | QA      | `llm_judge`                                                | /       |
-| `gpqa`               | QA      | `mc_letter`, `llm_judge`                                 | /       |
-| `mmlu-pro`           | QA      | `mc_letter`, `llm_judge`                                 | /       |
-| `arc-challenge`      | QA      | `mc_letter`, `llm_judge`                                 | /       |
-| `truthfulqa`         | QA      | `mc_letter`, `llm_judge`                                 | /       |
-| `agieval`            | QA      | `mc_letter`, `llm_judge`                                 | /       |
-| `commonsenseqa`      | QA      | `mc_letter`, `llm_judge`                                 | /       |
-| `hellaswag`          | QA      | `mc_letter`, `llm_judge`                                 | /       |
-| `openbookqa`         | QA      | `mc_letter`, `llm_judge`                                 | /       |
-| `bbh`                | QA      | `exact_match`, `llm_judge`                               | /       |
-| `math`               | QA      | `numeric_match`, `llm_judge`                             | /       |
-| `swe-bench-lite`     | Sandbox | `swe_resolved`, `swe_fail_to_pass`, `swe_pass_to_pass` | ✅      |
-| `swe-bench-verified` | Sandbox | `swe_resolved`, `swe_fail_to_pass`, `swe_pass_to_pass` | ✅      |
-| `swe-bench-pro`      | Sandbox | `swe_resolved`, `swe_fail_to_pass`, `swe_pass_to_pass` | ✅      |
-| `terminal-bench-2`   | Sandbox | `tb_resolved`                                              | ✅      |
-| `terminal-bench-2.1` | Sandbox | `tb_resolved`                                              | ✅      |
+| Benchmark              | Kind    | Sandbox |
+| ---------------------- | ------- | ------- |
+| `tau-bench`            | Tool    | /       |
+| `tau2`                 | Tool    | /       |
+| `tau3`                 | Tool    | /       |
+| `traject-bench`        | Tool    | /       |
+| `mmlu`                 | QA      | /       |
+| `gsm8k`                | QA      | /       |
+| `humaneval`            | QA      | /       |
+| `persistbench`         | QA      | /       |
+| `gdpval-aa`            | QA      | /       |
+| `gpqa`                 | QA      | /       |
+| `mmlu-pro`             | QA      | /       |
+| `arc-challenge`        | QA      | /       |
+| `truthfulqa`           | QA      | /       |
+| `agieval`              | QA      | /       |
+| `commonsenseqa`        | QA      | /       |
+| `hellaswag`            | QA      | /       |
+| `openbookqa`           | QA      | /       |
+| `bbh`                  | QA      | /       |
+| `math`                 | QA      | /       |
+| `swe-bench-lite`       | Sandbox | ✅      |
+| `swe-bench-verified`   | Sandbox | ✅      |
+| `swe-bench-pro`        | Sandbox | ✅      |
+| `terminal-bench-2`     | Sandbox | ✅      |
+| `terminal-bench-2.1`   | Sandbox | ✅      |
 
 ### Agent Harnesses
 
@@ -204,9 +202,10 @@ sample and switch to Trace for its span tree of LLM and tool calls.
 ## 4. Score results
 
 After trajectories land on the server, score the process and the outcome with the
-unified evaluation pipeline in `eval/`. Lightweight inline scoring can still ride
-along with `--evaluators` on the experiment CLI; use `eval/` for deeper metric
-groups across planning, tool usage, memory, correctness, efficiency, and safety.
+unified evaluation pipeline in `eval/`. The experiment already records the
+automatically selected benchmark grader's primary score; use the separate `eval/`
+pipeline for deeper metric groups across planning, tool usage, memory, correctness,
+efficiency, and safety.
 
 Full details: [`eval/README.md`](eval/README.md).
 

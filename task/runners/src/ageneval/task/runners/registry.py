@@ -1,18 +1,18 @@
-"""Registries of available datasets / agents / evaluators.
+"""Registries of available datasets, agents, and benchmark-owned graders.
 
 This is the **single source of truth** that the CLI (`task/examples/run_experiment.py`)
 and any future UI (A2E REST + React form) consult to populate dropdowns.
 
-Adding a new dataset, agent or evaluator means inserting one line here.
+Scoring implementations live in each dataset package's ``grader.py``.
 """
 
 from __future__ import annotations
 
-import json
+import importlib
 import os
-import re
 from typing import Any, Callable, Dict
 
+from ageneval.task.core.grading import GraderSpec
 from ageneval.task.core.instrumentation import Framework
 
 # ─── DATASETS ────────────────────────────────────────────────────────────────
@@ -149,11 +149,6 @@ def _bind_swe(**_kw: Any):
     return build_swe_bench_binding()
 
 
-def _score_swe(task: Any, sandbox: Any, model_patch: str) -> Any:
-    from ageneval.task.datasets.swe_bench import score_swe_bench
-    return score_swe_bench(task, sandbox, model_patch)
-
-
 def _setup_swe(task: Any, sandbox: Any) -> None:
     from ageneval.task.datasets.swe_bench import setup_swe_bench
     return setup_swe_bench(task, sandbox)
@@ -181,11 +176,6 @@ def _bind_swe_pro(**_kw: Any):
     return build_swe_bench_pro_binding()
 
 
-def _score_swe_pro(task: Any, sandbox: Any, model_patch: str) -> Any:
-    from ageneval.task.datasets.swe_bench_pro import score_swe_bench_pro
-    return score_swe_bench_pro(task, sandbox, model_patch)
-
-
 def _setup_swe_pro(task: Any, sandbox: Any) -> None:
     from ageneval.task.datasets.swe_bench_pro import setup_swe_bench_pro
     return setup_swe_bench_pro(task, sandbox)
@@ -210,11 +200,6 @@ def _load_tb2(**kw: Any):
 def _bind_tb2(**_kw: Any):
     from ageneval.task.datasets.terminal_bench_2 import build_terminal_bench_2_binding
     return build_terminal_bench_2_binding()
-
-
-def _score_tb2(task: Any, sandbox: Any, model_patch: str) -> Any:
-    from ageneval.task.datasets.terminal_bench_2 import score_terminal_bench_2
-    return score_terminal_bench_2(task, sandbox, model_patch)
 
 
 def _setup_tb2(task: Any, sandbox: Any) -> None:
@@ -244,11 +229,6 @@ def _bind_tb21(**_kw: Any):
     return build_terminal_bench_2_1_binding()
 
 
-def _score_tb21(task: Any, sandbox: Any, model_patch: str) -> Any:
-    from ageneval.task.datasets.terminal_bench_2_1 import score_terminal_bench_2_1
-    return score_terminal_bench_2_1(task, sandbox, model_patch)
-
-
 def _setup_tb21(task: Any, sandbox: Any) -> None:
     from ageneval.task.datasets.terminal_bench_2_1 import setup_terminal_bench_2_1
     return setup_terminal_bench_2_1(task, sandbox)
@@ -270,69 +250,64 @@ def _qa_bind(bench: str) -> Callable:
     return _f
 
 
-# Default (recommended) evaluators per dataset. The UI pre-selects these when a
-# dataset is chosen; the user can still add/remove any evaluator. Rationale:
-#   - tool datasets   → trajectory correctness (tool_recall) + answer quality (llm_judge)
-#   - multiple-choice → letter match (mc_letter) + llm_judge
-#   - numeric (math)  → numeric_match + llm_judge
-#   - free-form / code→ substring or exact_match + llm_judge
+_TAU_SETTINGS = {
+    "max_turns": 30,
+    "max_tokens": 4096,
+    "llm_timeout": 180.0,
+    "run_deadline": 1100.0,
+    "wall": 1200,
+}
+_QA_SETTINGS = {
+    "max_turns": 8,
+    "max_tokens": 4096,
+    "llm_timeout": 180.0,
+    "run_deadline": 1800.0,
+}
+
 DATASETS: Dict[str, Dict[str, Any]] = {
     "tau-bench": {"load": _load_tau_bench, "bind": _bind_tau_bench, "kind": "tool",
-                  "default_evaluators": ["tool_recall", "llm_judge"],
+                  "official_settings": _TAU_SETTINGS,
                   "agent_overrides": {"max_turns": 30, "max_steps": 30}},
     "tau2":      {"load": _load_tau2, "bind": _bind_tau2, "kind": "tool",
-                  "default_evaluators": ["tool_recall", "llm_judge"],
+                  "official_settings": _TAU_SETTINGS,
                   "agent_overrides": {"max_turns": 30, "max_steps": 30}},
     "tau3":      {"load": _load_tau3, "bind": _bind_tau3, "kind": "tool",
-                  "default_evaluators": ["tool_recall", "llm_judge"],
+                  "official_settings": _TAU_SETTINGS,
                   "agent_overrides": {"max_turns": 30, "max_steps": 30}},
     "tau3bench": {"load": _load_tau3, "bind": _bind_tau3, "kind": "tool",
-                  "default_evaluators": ["tool_recall", "llm_judge"],
+                  "official_settings": _TAU_SETTINGS,
                   "agent_overrides": {"max_turns": 30, "max_steps": 30}},
     "tau3-bench": {"load": _load_tau3, "bind": _bind_tau3, "kind": "tool",
-                   "default_evaluators": ["tool_recall", "llm_judge"],
+                   "official_settings": _TAU_SETTINGS,
                    "agent_overrides": {"max_turns": 30, "max_steps": 30}},
     "mmlu":      {"load": _load_mmlu, "bind": _bind_mmlu, "kind": "qa",
-                  "default_evaluators": ["mc_letter", "llm_judge"],
+                  "official_settings": _QA_SETTINGS,
                   "agent_overrides": {"max_turns": 8, "max_steps": 8}},
     "gsm8k":     {"load": _load_gsm8k, "bind": _bind_gsm8k, "kind": "qa",
-                  "default_evaluators": ["numeric_match", "llm_judge"],
+                  "official_settings": _QA_SETTINGS,
                   "agent_overrides": {"max_turns": 8, "max_steps": 8}},
     "humaneval": {"load": _load_humaneval, "bind": _bind_humaneval, "kind": "qa",
-                  "default_evaluators": ["humaneval_pass"],
+                  "official_settings": _QA_SETTINGS,
                   "agent_overrides": {"max_turns": 8, "max_steps": 8}},
     "persistbench": {"load": _load_persistbench, "bind": _bind_persistbench, "kind": "qa",
-                     "default_evaluators": ["substring"],
+                     "official_settings": _QA_SETTINGS,
                      "agent_overrides": {"max_turns": 8, "max_steps": 8}},
     "traject-bench": {"load": _load_traject_bench, "bind": _bind_traject_bench, "kind": "tool",
-                      "default_evaluators": ["tool_recall", "llm_judge"],
+                      "official_settings": _QA_SETTINGS,
                       "agent_overrides": {"max_turns": 8, "max_steps": 8}},
     "gdpval-aa": {"load": _load_gdpval, "bind": _bind_gdpval, "kind": "qa",
-                  "default_evaluators": ["llm_judge"],
+                  "official_settings": _QA_SETTINGS,
                   "agent_overrides": {"max_turns": 8, "max_steps": 8}},
     "deepsearchqa": {"load": _load_deepsearchqa, "bind": _bind_deepsearchqa, "kind": "tool",
-                     "default_evaluators": ["deepsearch_match", "tool_recall"],
+                     "official_settings": {**_QA_SETTINGS, "max_turns": 20},
                      "agent_overrides": {"max_turns": 20, "max_steps": 20}},
 }
 
 # qa_suite — 10 config-driven pure-QA benchmarks (no sandbox/tools).
-# Per-benchmark default evaluators keyed by answer style (mc / numeric / freeform).
-_QA_DEFAULT_EVALS: Dict[str, list] = {
-    "gpqa":          ["mc_letter", "llm_judge"],
-    "mmlu-pro":      ["mc_letter", "llm_judge"],
-    "arc-challenge": ["mc_letter", "llm_judge"],
-    "truthfulqa":    ["mc_letter", "llm_judge"],
-    "agieval":       ["mc_letter", "llm_judge"],
-    "commonsenseqa": ["mc_letter", "llm_judge"],
-    "hellaswag":     ["mc_letter", "llm_judge"],
-    "openbookqa":    ["mc_letter", "llm_judge"],
-    "bbh":           ["exact_match", "llm_judge"],
-    "math":          ["numeric_match", "llm_judge"],
-}
 for _b in ("gpqa", "mmlu-pro", "arc-challenge", "truthfulqa", "bbh",
            "agieval", "commonsenseqa", "hellaswag", "openbookqa", "math"):
     DATASETS[_b] = {"load": _qa_load(_b), "bind": _qa_bind(_b), "kind": "qa",
-                    "default_evaluators": _QA_DEFAULT_EVALS[_b],
+                    "official_settings": _QA_SETTINGS,
                     "agent_overrides": {"max_turns": 8, "max_steps": 8}}
 
 # Sandbox datasets — run inside a docker container; graded by score_swe_bench
@@ -341,37 +316,124 @@ for _b in ("gpqa", "mmlu-pro", "arc-challenge", "truthfulqa", "bbh",
 for _v in ("swe-bench-lite", "swe-bench-verified"):
     DATASETS[_v] = {
         "load": _load_swe(_v), "bind": _bind_swe, "kind": "sandbox",
-        "score": _score_swe, "setup": _setup_swe,
-        "default_evaluators": ["swe_resolved", "swe_fail_to_pass", "swe_pass_to_pass"],
+        "setup": _setup_swe,
+        "official_settings": {"max_turns": 40, "run_deadline": 3600.0},
         "agent_overrides": {"max_turns": 40, "max_steps": 40},
     }
 
 # SWE-bench Pro (ScaleAI) — official Scale harness grading (see swe_bench_pro pkg).
 DATASETS["swe-bench-pro"] = {
     "load": _load_swe_pro, "bind": _bind_swe_pro, "kind": "sandbox",
-    "score": _score_swe_pro, "setup": _setup_swe_pro,
-    "default_evaluators": ["swe_resolved", "swe_fail_to_pass", "swe_pass_to_pass"],
+    "setup": _setup_swe_pro,
+    "official_settings": {"max_turns": 40, "run_deadline": 3600.0},
     "agent_overrides": {"max_turns": 40, "max_steps": 40},
 }
 
 # Terminal-Bench 2.0 — sandbox dataset graded by the official held-out tests.
 DATASETS["terminal-bench-2"] = {
     "load": _load_tb2, "bind": _bind_tb2, "kind": "sandbox",
-    "score": _score_tb2, "setup": _setup_tb2,
-    "default_evaluators": ["tb_resolved"],
+    "setup": _setup_tb2,
+    "official_settings": {"max_turns": 40, "run_deadline": 3600.0},
     "agent_overrides": {"max_turns": 40, "max_steps": 40},
 }
 
 # Terminal-Bench 2.1 remains separate so published results preserve the version.
 DATASETS["terminal-bench-2.1"] = {
     "load": _load_tb21, "bind": _bind_tb21, "kind": "sandbox",
-    "score": _score_tb21, "setup": _setup_tb21,
-    "default_evaluators": ["tb_resolved"],
+    "setup": _setup_tb21,
+    "official_settings": {"max_turns": 10_000, "run_deadline": 3600.0},
     # Terminal-Bench is governed by each task.toml's [agent].timeout_sec.
     # Keep the framework-required turn/step cap effectively non-binding so it
     # cannot terminate a task before that wall-clock budget expires.
     "agent_overrides": {"max_turns": 10_000, "max_steps": 10_000},
 }
+
+_GRADER_MODULES: dict[str, str] = {
+    "tau-bench": "ageneval.task.datasets.tau_bench.grader",
+    "tau2": "ageneval.task.datasets.tau2.grader",
+    "tau3": "ageneval.task.datasets.tau3.grader",
+    "tau3bench": "ageneval.task.datasets.tau3.grader",
+    "tau3-bench": "ageneval.task.datasets.tau3.grader",
+    "mmlu": "ageneval.task.datasets.mmlu.grader",
+    "gsm8k": "ageneval.task.datasets.gsm8k.grader",
+    "humaneval": "ageneval.task.datasets.humaneval.grader",
+    "persistbench": "ageneval.task.datasets.persistbench.grader",
+    "traject-bench": "ageneval.task.datasets.traject_bench.grader",
+    "gdpval-aa": "ageneval.task.datasets.gdpval.grader",
+    "deepsearchqa": "ageneval.task.datasets.deepsearchqa.grader",
+    "gpqa": "ageneval.task.datasets.qa_suite.grader",
+    "mmlu-pro": "ageneval.task.datasets.qa_suite.grader",
+    "arc-challenge": "ageneval.task.datasets.qa_suite.grader",
+    "truthfulqa": "ageneval.task.datasets.qa_suite.grader",
+    "bbh": "ageneval.task.datasets.qa_suite.grader",
+    "agieval": "ageneval.task.datasets.qa_suite.grader",
+    "commonsenseqa": "ageneval.task.datasets.qa_suite.grader",
+    "hellaswag": "ageneval.task.datasets.qa_suite.grader",
+    "openbookqa": "ageneval.task.datasets.qa_suite.grader",
+    "math": "ageneval.task.datasets.qa_suite.grader",
+    "swe-bench-lite": "ageneval.task.datasets.swe_bench.grader",
+    "swe-bench-verified": "ageneval.task.datasets.swe_bench.grader",
+    "swe-bench-pro": "ageneval.task.datasets.swe_bench_pro.grader",
+    "terminal-bench-2": "ageneval.task.datasets.terminal_bench_2.grader",
+    "terminal-bench-2.1": "ageneval.task.datasets.terminal_bench_2_1.grader",
+}
+for _dataset_key, _grader_module in _GRADER_MODULES.items():
+    DATASETS[_dataset_key]["grader_module"] = _grader_module
+
+
+def grader_for_dataset(dataset: str) -> GraderSpec:
+    """Load the primary grader owned by one benchmark package."""
+    try:
+        entry = DATASETS[dataset]
+    except KeyError as exc:
+        raise KeyError(f"unknown dataset: {dataset}") from exc
+    module_name = entry.get("grader_module")
+    if not module_name:
+        raise LookupError(f"dataset {dataset!r} does not declare a grader")
+    module = importlib.import_module(str(module_name))
+    resolver = getattr(module, "grader_for_benchmark", None)
+    spec = resolver(dataset) if callable(resolver) else getattr(module, "GRADER", None)
+    if not isinstance(spec, GraderSpec):
+        raise TypeError(f"{module_name} must export a GraderSpec named GRADER")
+    return spec
+
+
+_SESSION_WRAPPERS: dict[str, tuple[str, str]] = {
+    "tau-bench": (
+        "ageneval.task.datasets.tau_bench.session",
+        "wrap_tau_official_session",
+    ),
+    "tau2": (
+        "ageneval.task.datasets.tau_bench.session",
+        "wrap_tau_official_session",
+    ),
+    "tau3": (
+        "ageneval.task.datasets.tau_bench.session",
+        "wrap_tau_official_session",
+    ),
+    "tau3bench": (
+        "ageneval.task.datasets.tau_bench.session",
+        "wrap_tau_official_session",
+    ),
+    "tau3-bench": (
+        "ageneval.task.datasets.tau_bench.session",
+        "wrap_tau_official_session",
+    ),
+    "deepsearchqa": (
+        "ageneval.task.datasets.deepsearchqa.session",
+        "wrap_dsqa_official_session",
+    ),
+}
+
+
+def wrap_agent_for_dataset(dataset: str, agent: Any) -> Any:
+    """Apply a benchmark-owned stateful session wrapper when required."""
+    target = _SESSION_WRAPPERS.get(dataset)
+    if target is None:
+        return agent
+    module_name, attribute = target
+    wrapper = getattr(importlib.import_module(module_name), attribute)
+    return wrapper(agent)
 
 
 # ─── AGENTS ──────────────────────────────────────────────────────────────────
@@ -513,296 +575,23 @@ def build_experiment_metadata(*, agent_name: str, agent: Any, sdk: str) -> Dict[
     }
 
 
-# ─── EVALUATORS ──────────────────────────────────────────────────────────────
-
-
-def _final_answer(output: dict) -> str:
-    """Return the agent's answer, unwrapping a ``{"final_answer": ...}`` JSON
-    envelope if present.
-
-    Many dataset bindings prescribe a JSON-action protocol, so an agent's
-    ``final_answer`` field is frequently the *string* ``{"final_answer": "B"}``
-    rather than the bare answer. Comparing that envelope verbatim would make
-    exact/substring matching spuriously fail, so unwrap it first.
-    """
-    raw = (output or {}).get("final_answer", "")
-    if not raw:
-        return ""
-    s = str(raw).strip()
-    if s.startswith("{") and "final_answer" in s:
-        try:
-            obj = json.loads(s)
-        except (ValueError, TypeError):
-            return s
-        if isinstance(obj, dict) and "final_answer" in obj:
-            return str(obj["final_answer"]).strip()
-    return s
-
-
-def _eval_exact_match(output: dict, expected: dict) -> float:
-    answer = _final_answer(output)
-    ref = ((expected or {}).get("expected_outputs") or [""])[0]
-    return float(str(answer).strip().lower() == str(ref).strip().lower())
-
-
-def _eval_substring(output: dict, expected: dict) -> float:
-    answer = _final_answer(output)
-    golds = list((expected or {}).get("expected_outputs") or [])
-    if not answer or not golds:
-        return 0.0
-    hits = sum(1 for s in golds if str(s).lower() in str(answer).lower())
-    return hits / len(golds)
-
-
-def _eval_tool_recall(output: dict, expected: dict) -> float:
-    called = set((output or {}).get("tool_calls", []))
-    expected_names = {a.get("name") for a in (expected or {}).get("expected_actions", []) if a.get("name")}
-    if not expected_names:
-        return 0.0
-    return len(called & expected_names) / len(expected_names)
-
-
-_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
-_FRAC_RE = re.compile(r"\\d?frac\s*\{\s*(-?\d+)\s*\}\s*\{\s*(-?\d+)\s*\}")
-_SLASH_RE = re.compile(r"(-?\d+)\s*/\s*(-?\d+)")
-
-
-def _parse_math_number(text: str) -> float | None:
-    """Parse a MATH-style answer: LaTeX fraction, a/b, or a plain number."""
-    s = str(text or "").strip()
-    if not s:
-        return None
-    s = s.replace(",", "").replace("$", "").strip()
-    fracs = list(_FRAC_RE.finditer(s))
-    if fracs:
-        m = fracs[-1]
-        den = float(m.group(2))
-        return None if den == 0 else float(m.group(1)) / den
-    tail = s.split()[-1] if s.split() else s
-    m = _SLASH_RE.fullmatch(s) or _SLASH_RE.fullmatch(tail)
-    if m:
-        den = float(m.group(2))
-        return None if den == 0 else float(m.group(1)) / den
-    nums = _NUM_RE.findall(s)
-    if not nums:
-        return None
-    try:
-        return float(nums[-1])
-    except (ValueError, TypeError):
-        return None
-
-
-def _eval_numeric_match(output: dict, expected: dict) -> float:
-    """Compare the agent's numeric answer against expected[0].
-
-    Unwraps a ``{"final_answer": ...}`` envelope and accepts fractions /
-    LaTeX ``\\frac{a}{b}`` so MATH items are not scored by a digits-only regex.
-    """
-    answer = _final_answer(output)
-    pred = _parse_math_number(answer)
-    ref = _parse_math_number(((expected or {}).get("expected_outputs") or [""])[0])
-    if pred is None or ref is None:
-        return 0.0
-    return float(abs(pred - ref) < 1e-6)
-
-
-_SET_SPLIT_RE = re.compile(r"\s*(?:,|;|\band\b|\n)\s*", re.IGNORECASE)
-
-
-def _deepsearch_items(text: str) -> list[str]:
-    parts = [re.sub(r"\s+", " ", p).strip(" .;:") for p in _SET_SPLIT_RE.split(text or "")]
-    return [p.lower() for p in parts if p]
-
-
-def _eval_deepsearch_match(output: dict, expected: dict, input: dict) -> float:
-    """DeepSearchQA outcome metric: single-answer containment or set-item recall.
-
-    Official autorater is gemini-2.5-flash. This deterministic stand-in scores
-    Single Answer as 1 iff the gold string appears in the reply, and Set Answer
-    as the fraction of gold items found in the reply.
-    """
-    answer = _final_answer(output)
-    gold = str(((expected or {}).get("expected_outputs") or [""])[0] or "")
-    if not answer or not gold:
-        return 0.0
-    state = (input or {}).get("initial_state") or {}
-    answer_type = str(state.get("answer_type") or "Single Answer")
-    if answer_type != "Set Answer":
-        g = gold.strip().lower()
-        a = answer.strip().lower()
-        return float(g == a or g in a)
-    golds = _deepsearch_items(gold)
-    if not golds:
-        return 0.0
-    blob = answer.lower()
-    pred = set(_deepsearch_items(answer))
-    hits = sum(1 for g in golds if g in pred or g in blob)
-    return hits / len(golds)
-
-
-def _eval_humaneval_pass(output: dict, expected: dict, input: dict) -> float:
-    """Official HumanEval pass@1: run hidden unit tests, not substring-of-canonical."""
-    from ageneval.task.datasets.humaneval import score_humaneval_state
-
-    state = (input or {}).get("initial_state") or {}
-    # Do not use ``_final_answer``: its ``.strip()`` drops the leading indent
-    # that a function body needs when concatenated onto the official prompt.
-    raw = str((output or {}).get("final_answer", "") or "")
-    if raw.lstrip().startswith("{") and "final_answer" in raw:
-        try:
-            obj = json.loads(raw)
-        except (ValueError, TypeError):
-            obj = None
-        if isinstance(obj, dict) and "final_answer" in obj:
-            raw = str(obj["final_answer"])
-    result = score_humaneval_state(raw, state)
-    return 1.0 if result.get("passed") else 0.0
-
-
-def _eval_mc_letter(output: dict, expected: dict) -> float:
-    """For multiple-choice benchmarks: extract the answer letter.
-
-    Range is A-J (not just A-D) because MMLU-Pro has up to 10 options and
-    CommonsenseQA has 5; restricting to A-D would silently score any E-J
-    answer as wrong. The answer is first unwrapped from a JSON envelope.
-    """
-    answer = _final_answer(output) or str((output or {}).get("final_answer", ""))
-    m = re.search(r"\b([A-J])\b", answer.upper())
-    if not m:
-        return 0.0
-    ref = str(((expected or {}).get("expected_outputs") or [""])[0]).strip().upper()
-    return float(m.group(1) == ref)
-
-
-def _eval_swe_resolved(output: dict) -> float:
-    """Sandbox (SWE-bench) metric: surface the ``resolved`` boolean produced by
-    ``SandboxScoringRunner`` (which graded the patch while the container was
-    still alive). A2E evaluators run *after* the task fn returns — by then
-    the container is gone — so the heavy grading already happened upstream and
-    this evaluator only reads the result.
-    """
-    return 1.0 if (output or {}).get("resolved") else 0.0
-
-
-_eval_swe_resolved.__name__ = _eval_swe_resolved.__qualname__ = "swe_resolved"
-
-
-def _eval_swe_fail_to_pass(output: dict) -> float:
-    """SWE-bench partial-credit metric: fraction of the instance's FAIL_TO_PASS
-    tests (the bug's target tests) that the model's patch flipped fail->pass.
-    1.0 means every target test now passes (necessary for ``resolved``); 0.0
-    means the fix addressed none. Reads counts produced upstream by the grader.
-    """
-    o = output or {}
-    total = o.get("swe_f2p_total") or 0
-    return (o.get("swe_f2p_passed") or 0) / total if total else 0.0
-
-
-def _eval_swe_pass_to_pass(output: dict) -> float:
-    """SWE-bench regression metric: fraction of PASS_TO_PASS tests that still
-    pass after the model's patch. 1.0 means the patch introduced no regression;
-    < 1.0 means it broke previously-passing tests. Reads grader counts.
-    """
-    o = output or {}
-    total = o.get("swe_p2p_total") or 0
-    return (o.get("swe_p2p_passed") or 0) / total if total else 0.0
-
-
-_eval_swe_fail_to_pass.__name__ = _eval_swe_fail_to_pass.__qualname__ = "swe_fail_to_pass"
-_eval_swe_pass_to_pass.__name__ = _eval_swe_pass_to_pass.__qualname__ = "swe_pass_to_pass"
-
-
-def _eval_tb_resolved(output: dict) -> float:
-    """Terminal-Bench 2 metric: 1.0 iff the held-out verifier reward was 1.
-
-    ``score_terminal_bench_2`` runs ``tests/test.sh`` while the container is alive
-    and surfaces the reward as ``resolved`` on ``TaskTrace.raw`` (A2E
-    evaluators run after the container is gone, so this only reads the result).
-    """
-    return 1.0 if (output or {}).get("resolved") else 0.0
-
-
-_eval_tb_resolved.__name__ = _eval_tb_resolved.__qualname__ = "tb_resolved"
-
-
-def make_llm_judge(llm: Any, *, label: str = "llm_judge") -> Callable[[dict, dict, dict], Any]:
-    """Prompted-text LLM-as-judge (works with reasoner-style models that lack tool_choice)."""
-    prompt_tmpl = (
-        "You are an evaluator. Decide whether the agent's answer satisfies the user's request.\n"
-        "Return EXACTLY one line: SCORE=<0 or 1>; EXPLANATION=<one sentence>\n\n"
-        "User instruction: {instruction}\n"
-        "Agent answer: {answer}\n"
-        "Expected answer hint: {expected}\n"
-    )
-
-    def fn(output: dict, expected: dict, input: dict) -> Any:
-        prompt = prompt_tmpl.format(
-            instruction=input.get("instruction", ""),
-            answer=(output or {}).get("final_answer", "") or "(no answer)",
-            expected=((expected or {}).get("expected_outputs") or [""])[0],
-        )
-        try:
-            text = llm.generate_text(prompt=prompt)
-        except Exception as exc:  # noqa: BLE001
-            return {"score": 0.0, "label": "error", "explanation": str(exc)[:200]}
-        m_score = re.search(r"SCORE\s*=\s*([01](?:\.\d+)?)", text or "")
-        m_expl = re.search(r"EXPLANATION\s*=\s*(.+?)(?:\n|$)", text or "")
-        score = float(m_score.group(1)) if m_score else 0.0
-        return {
-            "score": score,
-            "label": "correct" if score >= 0.5 else "incorrect",
-            "explanation": (m_expl.group(1) if m_expl else (text or ""))[:500],
-        }
-
-    # A2E derives the annotation name from __qualname__; set both so the
-    # experiment UI shows a clean evaluator name instead of "fn".
-    fn.__name__ = label
-    fn.__qualname__ = label
-    return fn
-
-
-# Clean evaluator names for the A2E experiment UI. A2E reads
-# __qualname__ (not __name__), so set both to the registry key.
-for _eval_fn, _eval_name in (
-    (_eval_exact_match, "exact_match"),
-    (_eval_substring, "substring"),
-    (_eval_tool_recall, "tool_recall"),
-    (_eval_numeric_match, "numeric_match"),
-    (_eval_mc_letter, "mc_letter"),
-    (_eval_humaneval_pass, "humaneval_pass"),
-    (_eval_deepsearch_match, "deepsearch_match"),
-):
-    _eval_fn.__name__ = _eval_name
-    _eval_fn.__qualname__ = _eval_name
-
-
-EVALUATORS: Dict[str, Callable[..., Any]] = {
-    "exact_match": _eval_exact_match,
-    "substring": _eval_substring,
-    "tool_recall": _eval_tool_recall,
-    "numeric_match": _eval_numeric_match,
-    "mc_letter": _eval_mc_letter,
-    "humaneval_pass": _eval_humaneval_pass,
-    "deepsearch_match": _eval_deepsearch_match,
-    "swe_resolved": _eval_swe_resolved,
-    "swe_fail_to_pass": _eval_swe_fail_to_pass,
-    "swe_pass_to_pass": _eval_swe_pass_to_pass,
-    "tb_resolved": _eval_tb_resolved,
-    # "llm_judge" is special: built dynamically when an LLM is provided.
-}
-
-
 def list_registries() -> Dict[str, Any]:
-    """Return discoverable names + metadata (used by CLI --list and UI dropdowns).
-
-    The string lists ``datasets`` / ``agents`` / ``evaluators`` are kept as-is for
-    backward compatibility. ``agent_meta`` / ``dataset_meta`` are added so the UI
-    can render grouped dropdowns and capability hints without hard-coding them.
-    """
+    """Return datasets, agents, and each benchmark-owned primary grader."""
+    grader_meta = {}
+    for name in sorted(DATASETS):
+        spec = grader_for_dataset(name)
+        grader_meta[name] = {
+            "id": spec.id,
+            "mode": spec.mode,
+            "official": spec.official,
+            "source": spec.source,
+            "version": spec.version,
+            "required": spec.required,
+        }
     return {
         "datasets": sorted(DATASETS),
         "agents": sorted(AGENTS),
-        "evaluators": sorted(EVALUATORS) + ["llm_judge"],
+        "graders": grader_meta,
         "agent_meta": {
             name: {
                 "framework": meta.get("framework", "none"),
@@ -815,7 +604,7 @@ def list_registries() -> Dict[str, Any]:
         "dataset_meta": {
             name: {
                 "kind": meta.get("kind", "qa"),
-                "default_evaluators": list(meta.get("default_evaluators", [])),
+                "grader": grader_meta[name],
             }
             for name, meta in DATASETS.items()
         },

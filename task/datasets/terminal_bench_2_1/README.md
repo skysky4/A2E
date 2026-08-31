@@ -74,9 +74,10 @@ uv run --frozen python examples/run_experiment.py \
   --dataset terminal-bench-2.1 \
   --agent agno \
   --model qwen-max \
-  --evaluators tb_resolved \
   --n 1
 ```
+
+The benchmark's `tb_resolved` grader is selected automatically.
 
 Without `AEP_TB21_TASK`, the loader prefers an already cached task image and
 then falls back to task-name order.

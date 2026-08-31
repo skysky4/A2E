@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from ageneval.task.core.dataset import TaskInput
+from ageneval.task.core.grading import GradeReport, GraderSpec
 
 logger = logging.getLogger(__name__)
 
@@ -322,3 +323,68 @@ def score_terminal_bench_2_1(task: TaskInput, sandbox, model_patch: str) -> dict
         reward_raw,
     )
     return report
+
+
+def _reward_number(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None and value != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def grade_terminal_bench_2_1_output(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> GradeReport:
+    """Build canonical metrics from the enhanced verifier's existing report."""
+    del expected, input, metadata
+    resolved = bool(output.get("resolved"))
+    score = float(resolved)
+    reward = _reward_number(output.get("tb_reward"))
+    return GradeReport(
+        score=score,
+        passed=resolved,
+        metrics={"tb_resolved": score, "tb_reward": reward},
+        metadata={
+            key: output.get(key)
+            for key in (
+                "status",
+                "tb_tests_total",
+                "tb_tests_passed",
+                "tb_tests_failed",
+                "tb_verifier_files",
+                "tb_verifier_exit",
+                "tb_verifier_phase",
+                "tb_uv_injected",
+                "tb_uv_version",
+                "tb_bootstrap_rewritten",
+                "tb_ctrf_artifact",
+            )
+        },
+        error=output.get("score_error") or output.get("tb_ctrf_error"),
+        explanation="Terminal-Bench 2.1 reward from its live held-out verifier.",
+        official=True,
+        source="harbor-framework/terminal-bench-2-1",
+        version="2.1",
+    )
+
+
+GRADER = GraderSpec(
+    id="tb_resolved",
+    grade=score_terminal_bench_2_1,
+    summarize=grade_terminal_bench_2_1_output,
+    mode="inline",
+    official=True,
+    source="harbor-framework/terminal-bench-2-1",
+    version="2.1",
+)
+post_platform_grade = grade_terminal_bench_2_1_output
+
+__all__ = [
+    "GRADER",
+    "grade_terminal_bench_2_1_output",
+    "post_platform_grade",
+    "score_terminal_bench_2_1",
+]

@@ -17,10 +17,6 @@ benchmarks:
         - openssl-selfsigned-cert
       exclude_categories:
         - security
-    graders:
-      - id: terminal-bench
-        mode: inline
-        required: true
 
 harnesses:
   - claude-sdk

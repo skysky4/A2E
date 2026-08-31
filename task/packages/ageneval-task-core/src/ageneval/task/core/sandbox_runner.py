@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from ageneval.task.core.agent import AgentRunner
 from ageneval.task.core.async_utils import run_sync_in_daemon_thread
 from ageneval.task.core.dataset import TaskInput
+from ageneval.task.core.grading import GradeReport, GraderSpec
 from ageneval.task.core.result import TaskTrace
 
 if TYPE_CHECKING:
@@ -48,13 +49,18 @@ class SandboxScoringRunner(AgentRunner):
     """Run an inner agent inside a per-task sandbox and score the result."""
 
     inner: AgentRunner
-    score_fn: ScoreFn
+    score_fn: ScoreFn | None = None
+    grader: GraderSpec | None = None
     setup_fn: SetupFn | None = None
     patch_cmd: Sequence[str] = ("git", "diff")
     lifecycle_hook: LifecycleHook | None = None
     name: str = field(init=False)
 
     def __post_init__(self) -> None:
+        if (self.score_fn is None) == (self.grader is None):
+            raise ValueError("provide exactly one of score_fn or grader")
+        if self.grader is not None and self.grader.mode != "inline":
+            raise ValueError("sandbox grader must use mode='inline'")
         self.name = f"sandbox::{getattr(self.inner, 'name', 'agent')}"
 
     async def run(self, task: TaskInput) -> TaskTrace:
@@ -123,15 +129,31 @@ class SandboxScoringRunner(AgentRunner):
                     # Keep the sandbox session alive here, but move the blocking
                     # scorer to a daemon worker. A cancelled default-executor
                     # worker would otherwise delay asyncio/interpreter shutdown.
-                    report = dict(
-                        await run_sync_in_daemon_thread(
-                            self.score_fn,
-                            task,
-                            sb,
-                            model_patch,
-                            thread_name=f"a2e-scorer-{task.task_id}",
-                        )
+                    scorer = (
+                        self.grader.resolve()
+                        if self.grader is not None
+                        else self.score_fn
                     )
+                    assert scorer is not None
+                    grade_value = await run_sync_in_daemon_thread(
+                        scorer,
+                        task,
+                        sb,
+                        model_patch,
+                        thread_name=f"a2e-scorer-{task.task_id}",
+                    )
+                    if self.grader is not None:
+                        normalized = self.grader.summarize_inline(grade_value)
+                        report = (
+                            dict(grade_value)
+                            if isinstance(grade_value, Mapping)
+                            else {}
+                        )
+                        report["grade_report"] = normalized.as_dict()
+                    elif isinstance(grade_value, GradeReport):
+                        report = {"grade_report": grade_value.as_dict()}
+                    else:
+                        report = dict(grade_value)
                 except Exception as exc:  # scoring must not crash the run
                     logger.exception("scorer failed on %s", task.task_id)
                     report = {"resolved": False, "score_error": str(exc)[:500]}

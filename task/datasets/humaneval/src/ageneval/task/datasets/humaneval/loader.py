@@ -26,8 +26,8 @@ class HumanEvalDataset(Dataset):
 def load_humaneval_tasks(split: str = "test", n: int | None = 10) -> HumanEvalDataset:
     """Download HumanEval and convert each problem into a ``TaskInput``.
 
-    The expected output is the canonical solution string; downstream evaluators
-    typically grade by running the test cases shipped in ``initial_state``.
+    The expected output is the canonical solution string; the benchmark grader
+    runs the test cases shipped in ``initial_state``.
     """
     from datasets import load_dataset  # type: ignore
 

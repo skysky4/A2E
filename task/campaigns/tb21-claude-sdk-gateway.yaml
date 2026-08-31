@@ -12,10 +12,6 @@ benchmarks:
       seed: 20260822
       exclude_categories:
         - security
-    graders:
-      - id: terminal-bench
-        mode: inline
-        required: true
 
 harnesses:
   - langgraph

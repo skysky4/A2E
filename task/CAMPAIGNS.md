@@ -5,6 +5,9 @@ matrix while the A2E Server remains a result and trace sink. Scheduling,
 retries, process isolation, Docker limits, grading, and recovery all live in
 the `task/` workspace.
 
+Each benchmark selects its dataset-owned primary grader automatically; campaign
+YAML does not need to repeat that grader configuration.
+
 ## Configure models
 
 Model profiles live in `task/models/`. They contain only environment-variable
@@ -136,8 +139,8 @@ required.
 
 ## Legacy runner
 
-`examples/run_experiment.py` keeps all existing flags and also accepts
-`--model-profile`. Explicit `--model`, `--api-base`, and `--api-key` values
-override the selected profile. Its examples also run in independent Trial
-processes, including non-sandbox datasets whose synchronous tools could
-otherwise serialize the a2e-client event loop.
+`examples/run_experiment.py` also accepts `--model-profile`; its benchmark
+grader is selected automatically. Explicit `--model`, `--api-base`, and
+`--api-key` values override the selected profile. Its examples also run in
+independent Trial processes, including non-sandbox datasets whose synchronous
+tools could otherwise serialize the a2e-client event loop.

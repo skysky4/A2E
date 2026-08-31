@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import os
@@ -62,6 +61,40 @@ def _normalize_grade(
     ended_at: datetime,
     trace_id: str | None,
 ) -> GradeResult:
+    from ageneval.task.core.grading import GradeReport
+
+    if isinstance(value, GradeReport):
+        metadata = {
+            **dict(value.metadata),
+            "metrics": dict(value.metrics),
+            "official": value.official,
+            "source": value.source,
+            "version": value.version,
+            "passed": value.passed,
+        }
+        return GradeResult(
+            name=grader.id,
+            mode=grader.mode,
+            required=grader.required,
+            annotator_kind=(
+                "LLM" if grader.id in {"gdp_grader", "llm_judge"} else "CODE"
+            ),
+            score=value.score,
+            label=value.label
+            or (
+                "pass"
+                if value.passed is True
+                else "fail"
+                if value.passed is False
+                else None
+            ),
+            explanation=value.explanation,
+            metadata=metadata,
+            error=value.error,
+            start_time=started_at,
+            end_time=ended_at,
+            trace_id=trace_id,
+        )
     if isinstance(value, bool):
         score = float(value)
         return GradeResult(
@@ -126,16 +159,24 @@ def _normalize_grade(
 async def _run_grader(
     grader: GraderConfig,
     *,
+    benchmark_id: str,
     task: Any,
     output: dict[str, Any],
     trace_id: str | None,
     resolved_model: Any | None = None,
 ) -> GradeResult:
-    from ageneval.task.runners import EVALUATORS, make_llm_judge
+    from ageneval.task.core.grading import normalize_grade, run_grader
+    from ageneval.task.runners import grader_for_dataset
 
     started_at = datetime.now(timezone.utc)
     try:
-        if grader.mode == "inline":
+        spec = grader_for_dataset(benchmark_id)
+        if grader.id not in {spec.id, *spec.aliases}:
+            raise ValueError(
+                f"benchmark {benchmark_id!r} owns grader {spec.id!r}, "
+                f"not {grader.id!r}"
+            )
+        if spec.mode == "inline":
             inline_error = (
                 output.get("score_error")
                 or output.get("tb_reward_read_error")
@@ -143,18 +184,17 @@ async def _run_grader(
             )
             if inline_error:
                 raise RuntimeError(str(inline_error))
-        if grader.id in {"terminal-bench", "swe-bench"}:
-            resolved = bool(output.get("resolved"))
-            reward = output.get("tb_reward")
-            value = {
-                "score": float(reward) if reward is not None else float(resolved),
-                "label": "pass" if resolved else "fail",
-                "metadata": {"verifier_status": output.get("status")},
-            }
+            embedded = output.get("grade_report")
+            if not isinstance(embedded, dict):
+                raise ValueError(
+                    f"inline grader {spec.id!r} did not produce grade_report"
+                )
+            value = normalize_grade(embedded, spec)
         else:
-            if grader.id == "llm_judge":
+            runtime = None
+            if spec.factory is not None:
                 if resolved_model is None:
-                    raise ValueError("llm_judge requires a resolved model runtime")
+                    raise ValueError(f"{spec.id} requires a resolved model runtime")
                 from a2e.evals.llm import LLM
 
                 provider = (
@@ -169,29 +209,22 @@ async def _run_grader(
                 }
                 if resolved_model.base_url:
                     llm_kwargs["base_url"] = resolved_model.base_url
-                evaluator = make_llm_judge(LLM(**llm_kwargs))
-            else:
-                evaluator = EVALUATORS.get(grader.id)
-            if evaluator is None:
-                raise ValueError(f"unknown or unavailable grader: {grader.id}")
-            available = {
-                "output": output,
-                "expected": {
+                runtime = LLM(**llm_kwargs)
+            value = await run_grader(
+                spec,
+                output=output,
+                expected={
                     "expected_outputs": list(task.expected_outputs),
                     "expected_actions": list(task.expected_actions),
                 },
-                "input": {
+                input={
                     "instruction": task.instruction,
                     "initial_state": dict(task.initial_state),
                 },
-                "metadata": dict(task.metadata),
-                "example": task,
-            }
-            signature = inspect.signature(evaluator)
-            kwargs = {name: available[name] for name in signature.parameters if name in available}
-            value = evaluator(**kwargs)
-            if inspect.isawaitable(value):
-                value = await value
+                metadata=dict(task.metadata),
+                example=task,
+                runtime=runtime,
+            )
         ended_at = datetime.now(timezone.utc)
         return _normalize_grade(
             grader,
@@ -353,7 +386,12 @@ async def _execute_attempt(
     agent_kwargs_override: dict[str, Any] | None = None,
 ) -> TrialResult:
     from ageneval.task.core import SandboxScoringRunner, TaskInput
-    from ageneval.task.runners import AGENTS, DATASETS
+    from ageneval.task.runners import (
+        AGENTS,
+        DATASETS,
+        grader_for_dataset,
+        wrap_agent_for_dataset,
+    )
     from opentelemetry.trace import Status, StatusCode
 
     started_at = datetime.now(timezone.utc)
@@ -386,12 +424,19 @@ async def _execute_attempt(
         for key, value in (ds_entry.get("agent_overrides") or {}).items():
             agent_kwargs.setdefault(key, value)
         agent = AGENTS[cell["harness"]]["build"](binding=binding, **agent_kwargs)
-        runner: Any = agent
+        runner: Any = wrap_agent_for_dataset(cell["benchmark"], agent)
         sandbox = ds_entry.get("kind") == "sandbox"
+        grader_items = list(benchmark.get("graders") or [])
+        grader_spec = (
+            grader_for_dataset(cell["benchmark"])
+            if sandbox or grader_items
+            else None
+        )
         if sandbox:
+            assert grader_spec is not None
             runner = SandboxScoringRunner(
                 inner=agent,
-                score_fn=ds_entry["score"],
+                grader=grader_spec,
                 setup_fn=ds_entry.get("setup"),
                 lifecycle_hook=hook,
             )
@@ -422,6 +467,7 @@ async def _execute_attempt(
                             grades.append(
                                 await _run_grader(
                                     grader,
+                                    benchmark_id=cell["benchmark"],
                                     task=task,
                                     output=output,
                                     trace_id=trace_id,

@@ -22,9 +22,9 @@ is alive.
 
 Registered as `swe-bench-pro` in `task/runners/.../registry.py` with
 `kind="sandbox"`, `score=score_swe_bench_pro`, `setup=setup_swe_bench_pro`, and
-default evaluators `swe_resolved` / `swe_fail_to_pass` / `swe_pass_to_pass`.
-`SandboxScoringRunner` wraps any of the 9 A2E agents unchanged — the live sandbox
-is injected via `state["__sandbox__"]`, the agent edits `/app` with `bash` /
+an automatically selected `swe_resolved` primary grader. `SandboxScoringRunner`
+wraps any of the 9 A2E agents unchanged — the live sandbox is injected via
+`state["__sandbox__"]`, the agent edits `/app` with `bash` /
 `str_replace_editor`, and grading happens before the container is torn down.
 
 ## Vendored harness (standalone)
@@ -46,5 +46,5 @@ exactly like the official harness with **no out-of-repo dependency**. See
 ```bash
 # CLI (target one already-pulled instance via env pin if desired)
 cd task && uv run --frozen python examples/run_experiment.py \
-    --dataset swe-bench-pro --agent agno --evaluators swe_resolved --n 1
+    --dataset swe-bench-pro --agent agno --n 1
 ```

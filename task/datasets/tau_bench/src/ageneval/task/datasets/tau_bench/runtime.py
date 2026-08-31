@@ -17,6 +17,25 @@ Domain = Literal["retail", "airline"]
 
 _DB_KEY = "__tau_db__"
 _DOMAIN_KEY = "__tau_domain__"
+_CACHE_KEY = "__a2e_tau_tool_cache__"
+
+WRITE_TOOLS = frozenset(
+    {
+        "exchange_delivered_order_items",
+        "return_delivered_order_items",
+        "cancel_pending_order",
+        "modify_pending_order_items",
+        "modify_pending_order_address",
+        "modify_pending_order_payment",
+        "modify_user_address",
+        "book_reservation",
+        "cancel_reservation",
+        "update_reservation_flights",
+        "update_reservation_baggages",
+        "update_reservation_passengers",
+        "send_certificate",
+    }
+)
 
 _NATIVE_TOOL_SUFFIX = (
     "\n\nYou have the tools listed in the function-calling interface. "
@@ -88,18 +107,44 @@ def ensure_db(state: Mapping[str, Any], domain: Domain) -> dict[str, Any]:
     return deepcopy(load_domain_data(domain))
 
 
+def _call_key(name: str, arguments: Mapping[str, Any]) -> str:
+    return json.dumps(
+        {"name": name, "arguments": dict(arguments or {})},
+        sort_keys=True,
+        default=str,
+    )
+
+
+def _is_tool_error(result: Any) -> bool:
+    if isinstance(result, Mapping) and result.get("error"):
+        return True
+    return isinstance(result, str) and result.lower().startswith("error")
+
+
 def execute_tool(
     name: str,
     arguments: Mapping[str, Any],
     state: Mapping[str, Any],
     domain: Domain = "retail",
 ) -> Any:
-    """Dispatch ``name`` against the official Sierra tool implementation."""
+    """Dispatch a Sierra tool, reusing successful calls across session turns."""
     tools = _tool_map(domain)
     if name not in tools:
         return {"error": f"unknown tool '{name}'", "available": sorted(tools)}
-    db = ensure_db(state, domain)
     args = dict(arguments or {})
+    cache: list[Any] | None = None
+    if isinstance(state, dict):
+        raw_cache = state.get(_CACHE_KEY)
+        if not isinstance(raw_cache, list):
+            raw_cache = []
+            state[_CACHE_KEY] = raw_cache
+        cache = raw_cache
+        key = _call_key(name, args)
+        for item in cache:
+            if isinstance(item, Mapping) and item.get("key") == key:
+                return item.get("result")
+
+    db = ensure_db(state, domain)
     try:
         result = tools[name].invoke(data=db, **args)
     except TypeError as exc:
@@ -110,8 +155,11 @@ def execute_tool(
         text = result.strip()
         if text.startswith("{") or text.startswith("["):
             try:
-                return json.loads(text)
+                result = json.loads(text)
             except (ValueError, TypeError):
-                return text
-        return text
+                result = text
+        else:
+            result = text
+    if cache is not None and not _is_tool_error(result):
+        cache.append({"key": _call_key(name, args), "result": result})
     return result

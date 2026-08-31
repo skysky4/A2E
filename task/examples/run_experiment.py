@@ -1,10 +1,10 @@
-"""Generic A2E experiment runner — pick any (dataset, agent, evaluators).
+"""Generic A2E experiment runner — pick a dataset and agent.
 
-This is the "free-selection" CLI:
+Each benchmark owns and automatically runs its primary grader:
 
     uv run --frozen python examples/run_experiment.py --list
     uv run --frozen python examples/run_experiment.py \\
-        --dataset mmlu --agent langgraph --evaluators mc_letter,llm_judge
+        --dataset mmlu --agent langgraph
 
 A2E UI will show the result under Datasets + Experiments at
 http://localhost:6006 .
@@ -23,17 +23,22 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ageneval.task.core import SandboxScoringRunner, setup_instrumentation
+from ageneval.task.core import (
+    platform_evaluator,
+    setup_instrumentation,
+)
 from ageneval.task.runners import (
     AGENTS,
     DATASETS,
     DEFAULT_SAMPLE_SIZE,
-    EVALUATORS,
+    apply_run_settings,
     build_experiment_metadata,
     build_run_identity,
+    format_run_settings,
     framework_for_agent,
+    grader_for_dataset,
     list_registries,
-    make_llm_judge,
+    resolve_run_settings,
     sample_dataset,
 )
 
@@ -61,78 +66,6 @@ def _build_examples(tasks):
     return rows
 
 
-def _make_task_fn(agent, ds_entry: dict | None = None):
-    from ageneval.task.core import TaskInput
-
-    ds_entry = ds_entry or {}
-    is_sandbox = ds_entry.get("kind") == "sandbox"
-    # For sandbox datasets the agent runs inside a per-task container managed by
-    # SandboxScoringRunner, which also grades the result while the container is
-    # alive (A2E evaluators run after task_fn returns — too late).
-    runner = agent
-    if is_sandbox:
-        runner = SandboxScoringRunner(
-            inner=agent,
-            score_fn=ds_entry["score"],
-            setup_fn=ds_entry.get("setup"),
-        )
-
-    async def task_fn(input: dict, metadata: dict) -> dict:
-        task_input = TaskInput(
-            task_id=metadata.get("task_id", "?"),
-            instruction=input.get("instruction", ""),
-            initial_state=input.get("initial_state", {}),
-            metadata=metadata if is_sandbox else {},
-            sandbox=metadata.get("sandbox") if is_sandbox else None,
-        )
-        trace = await runner.run(task_input)
-        out = {
-            "final_answer": trace.final_answer or "",
-            "tool_calls": [tc.name for tc in trace.tool_calls],
-            "status": trace.status,
-            "turns": trace.turns,
-            "trace_id": trace.trace_id,
-            "error": trace.error,
-        }
-        if is_sandbox:
-            raw = dict(trace.raw)
-            out["resolved"] = bool(raw.get("resolved"))
-            out["swe_status"] = raw.get("status")
-            out["swe_f2p_passed"] = raw.get("f2p_passed")
-            out["swe_f2p_total"] = raw.get("f2p_total")
-            out["swe_p2p_passed"] = raw.get("p2p_passed")
-            out["swe_p2p_total"] = raw.get("p2p_total")
-            out["model_patch"] = (raw.get("model_patch") or "")[:4000]
-            # Terminal-Bench graders expose reward, verifier status, and test
-            # counts. Preserve them in experiment-run output so the final DB
-            # can be audited without relying on process logs.
-            out["tb_status"] = raw.get("status")
-            for key in (
-                "tb_reward",
-                "tb_tests_total",
-                "tb_tests_passed",
-                "tb_tests_failed",
-                "tb_verifier_files",
-                "tb_verifier_exit",
-                "tb_verifier_stdout_tail",
-                "tb_verifier_stderr_tail",
-                "tb_verifier_phase",
-                "tb_uv_injected",
-                "tb_uv_version",
-                "tb_bootstrap_rewritten",
-                "tb_reward_read_error",
-                "tb_ctrf_error",
-                "tb_ctrf",
-                "tb_ctrf_artifact",
-                "tb_ctrf_artifact_error",
-                "score_error",
-            ):
-                out[key] = raw.get(key)
-        return out
-
-    return task_fn
-
-
 def _make_process_task_fn(
     *,
     dataset_name: str,
@@ -145,6 +78,7 @@ def _make_process_task_fn(
     timeout_seconds: int,
     run_id: str,
     run_root: Path,
+    grader_spec: Any,
 ):
     """Build an a2e-client task callback backed by one process per example."""
     from ageneval.task.orchestrator.process import TrialProcessRunner
@@ -152,7 +86,7 @@ def _make_process_task_fn(
 
     script = Path(__file__).resolve().with_name("run_isolated_trial.py")
 
-    async def task_fn(input: dict, metadata: dict) -> dict:
+    async def task_fn(input: dict, expected: dict, metadata: dict) -> dict:
         from opentelemetry.propagate import inject
 
         task_id = str(metadata.get("task_id") or "unknown")
@@ -186,15 +120,22 @@ def _make_process_task_fn(
                     "task_id": task_id,
                     "instruction": input.get("instruction", ""),
                     "initial_state": input.get("initial_state", {}),
-                    "expected_actions": [],
-                    "expected_outputs": [],
+                    "expected_actions": expected.get("expected_actions") or [],
+                    "expected_outputs": expected.get("expected_outputs") or [],
                     "metadata": metadata,
                     "sandbox": metadata.get("sandbox"),
                 },
                 "benchmark": {
                     "id": dataset_name,
                     "domain": bind_kwargs.get("domain"),
-                    "graders": [],
+                    "graders": [
+                        {
+                            "id": grader_spec.id,
+                            "mode": grader_spec.mode,
+                            "required": grader_spec.required,
+                            "model": None,
+                        }
+                    ],
                 },
                 "profile": resolved_model.profile.public_dict(),
                 "base_url": resolved_model.base_url,
@@ -234,37 +175,16 @@ def _make_process_task_fn(
             },
         )
         output = dict(result.output)
+        if result.grades:
+            output["grade_report"] = result.grades[0].model_dump(
+                mode="json",
+                exclude_none=False,
+            )
         output.setdefault("trace_id", result.trace_id)
         output.setdefault("error", result.error)
         return output
 
     return task_fn
-
-
-def _build_evaluator_list(names: list[str], judge_llm: Any | None):
-    """Return a list of evaluator callables for a2e run_experiment.
-
-    A2E introspects each callable's signature to know which kwargs
-    (``output``, ``expected``, ``input``, ``metadata``, ``example``) to bind,
-    so we MUST pass functions that already declare those parameters — no
-    ``**kw`` wrappers.
-    """
-    evaluators: list = []
-    for name in names:
-        n = name.strip()
-        if not n:
-            continue
-        if n == "llm_judge":
-            if judge_llm is None:
-                logger.warning("llm_judge requested but no LLM configured; skipped")
-                continue
-            evaluators.append(make_llm_judge(judge_llm))
-            continue
-        fn = EVALUATORS.get(n)
-        if fn is None:
-            raise ValueError(f"Unknown evaluator: {n}. Available: {sorted(EVALUATORS)}")
-        evaluators.append(fn)
-    return evaluators
 
 
 def _build_experiment_metadata(*, agent_name: str, agent: Any, sdk: str) -> dict[str, Any]:
@@ -283,14 +203,13 @@ def _sandbox_outer_timeout(tasks: list[Any], buffer_seconds: int = 300) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--list", action="store_true", help="list available datasets/agents/evaluators and exit")
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="list available datasets, agents, and benchmark graders",
+    )
     parser.add_argument("--dataset", default=None, help=f"one of {sorted(DATASETS)}")
     parser.add_argument("--agent", default="agno", help=f"one of {sorted(AGENTS)}")
-    parser.add_argument(
-        "--evaluators",
-        default="exact_match,substring",
-        help="comma-separated names; pass empty string (\"\") for task-only (no scoring)",
-    )
     parser.add_argument(
         "--n",
         type=int,
@@ -341,6 +260,30 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="override the benchmark's turn/step budget",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="override the benchmark's per-request token budget",
+    )
+    parser.add_argument(
+        "--llm-timeout",
+        type=float,
+        default=None,
+        help="override the benchmark's per-request LLM timeout",
+    )
+    parser.add_argument(
+        "--run-deadline",
+        type=float,
+        default=None,
+        help="override the benchmark's whole-agent deadline",
+    )
+    parser.add_argument(
         "--run-id",
         default=None,
         help="optional run id; omitted generates a unique timestamped id",
@@ -377,6 +320,10 @@ def main() -> int:
         parser.error("--concurrency must be a positive integer")
     if args.timeout is not None and args.timeout <= 0:
         parser.error("--timeout must be a positive integer")
+    for option in ("max_turns", "max_tokens", "llm_timeout", "run_deadline"):
+        value = getattr(args, option)
+        if value is not None and value <= 0:
+            parser.error(f"--{option.replace('_', '-')} must be positive")
 
     # Resolve the unified profile before constructing any framework SDK. Legacy
     # flags remain authoritative and are folded into the runtime-only model.
@@ -411,6 +358,17 @@ def main() -> int:
     # sandbox pins (A2E_SWE_INSTANCE / A2E_SWE_PRO_INSTANCE / A2E_TB2_TASK /
     # AEP_TB21_TASK) still win inside the registry wrappers.
     ds_entry = DATASETS[args.dataset]
+    grader_spec = grader_for_dataset(args.dataset)
+    settings = resolve_run_settings(
+        ds_entry,
+        max_turns=args.max_turns,
+        max_tokens=args.max_tokens,
+        llm_timeout=args.llm_timeout,
+        run_deadline=args.run_deadline,
+    )
+    settings["grader"] = grader_spec.id
+    apply_run_settings(settings)
+    print(format_run_settings(settings, dataset=args.dataset))
     load_kwargs: dict[str, Any] = {"n": None}
     bind_kwargs: dict[str, Any] = {}
     if args.dataset in ("tau-bench", "tau2", "tau3", "tau3bench", "tau3-bench"):
@@ -460,6 +418,8 @@ def main() -> int:
     # overrides (each builder ignores kwargs it doesn't accept).
     for _k, _v in (ds_entry.get("agent_overrides") or {}).items():
         agent_kwargs.setdefault(_k, _v)
+    agent_kwargs["max_turns"] = settings["max_turns"]
+    agent_kwargs["max_steps"] = settings["max_turns"]
     agent = agent_entry["build"](**agent_kwargs)
 
     # 3. Give this invocation its own dataset, experiment, and trace project.
@@ -532,26 +492,9 @@ def main() -> int:
         f"task_ids={list(selection.task_ids)}"
     )
 
-    # 5. Build evaluators (incl. optional LLM judge)
-    judge_llm = None
-    if "llm_judge" in args.evaluators:
-        try:
-            from a2e.evals.llm import LLM  # type: ignore
-
-            judge_kwargs: dict[str, Any] = {
-                "provider": "openai",
-                "model": args.model or os.environ.get("A2E_LANGGRAPH_MODEL") or "gpt-4o-mini",
-            }
-            if args.api_base or os.environ.get("OPENAI_API_BASE"):
-                judge_kwargs["base_url"] = args.api_base or os.environ["OPENAI_API_BASE"]
-            if args.api_key or os.environ.get("OPENAI_API_KEY"):
-                judge_kwargs["api_key"] = args.api_key or os.environ["OPENAI_API_KEY"]
-            judge_llm = LLM(**judge_kwargs)
-        except Exception as exc:
-            logger.warning("LLM judge construction failed: %s", exc)
-    evaluators = _build_evaluator_list(args.evaluators.split(","), judge_llm)
-    if not evaluators:
-        evaluators = None  # a2e-client skips evaluate_experiment when evaluators is None
+    # 5. The isolated trial runs the benchmark-owned grader. This adapter only
+    # forwards its embedded GradeReport to the existing platform annotation API.
+    platform_graders = [platform_evaluator(grader_spec)]
 
     # 6. Run experiment
     from a2e.client.experiments import async_run_experiment  # type: ignore
@@ -570,10 +513,9 @@ def main() -> int:
         if _pre:
             print(f"🧹 pre-run sweep removed {len(_pre)} leftover sandbox container(s)")
 
-    eval_label = args.evaluators if evaluators is not None else "(task-only)"
     print(
         f"▶ run {identity.run_id}: {args.dataset} x {args.agent} x "
-        f"{actual_model} x [{eval_label}] over {len(examples)} examples"
+        f"{actual_model} x [{grader_spec.id}] over {len(examples)} examples"
     )
     is_sandbox = ds_entry.get("kind") == "sandbox"
     outer_timeout = (
@@ -605,11 +547,12 @@ def main() -> int:
         timeout_seconds=outer_timeout,
         run_id=identity.run_id,
         run_root=legacy_run_root,
+        grader_spec=grader_spec,
     )
     run_kwargs: dict[str, Any] = dict(
         dataset=a2e_dataset,
         task=task_fn,
-        evaluators=evaluators,
+        evaluators=platform_graders,
         experiment_name=identity.experiment_name,
         experiment_description=(
             f"A2E CLI run {identity.run_id}: {args.dataset} x "
@@ -656,10 +599,7 @@ def main() -> int:
         print(f"  experiment_id: {ran.get('experiment_id', '')}")
         print(f"  dataset_version_id: {ran.get('dataset_version_id', '')}")
     print(f"  open http://localhost:6006/datasets — '{ds_name}'")
-    if evaluators is None:
-        print("  evaluators: (none — run eval/ separately)")
-    else:
-        print(f"  evaluators: {[e.__name__ for e in evaluators]}")
+    print(f"  benchmark grader: {grader_spec.id}")
 
     provider.force_flush(timeout_millis=8000)
     if model_runtime is not None:

@@ -7,10 +7,6 @@ benchmarks:
     sample:
       n: 1
       seed: 20260822
-    graders:
-      - id: mc_letter
-        mode: posthoc
-        required: true
 harnesses:
   - autogen-agentchat
 repetitions: 1

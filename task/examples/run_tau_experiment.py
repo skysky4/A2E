@@ -6,12 +6,8 @@ What this script does
 2. Uploads τ-bench tasks to A2E as a *Dataset* (visible in UI under
    "Datasets").
 3. Wraps the multi-agent `LangGraphTauAgent` as a A2E *experiment task*.
-4. Attaches two A2E evaluators:
-     - `exact_match` (code-based)
-     - `ToolSelectionEvaluator` (LLM-as-judge)
-5. Calls `run_experiment` → the entire flow (input → agent output →
-   evaluator scores) lands in A2E under "Experiments" with full trace
-   linkage.
+4. Runs the benchmark-owned Sierra grader.
+5. Calls `run_experiment` so the task trace and official score land in A2E.
 
 Usage
 -----
@@ -32,18 +28,18 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import sys
-from typing import Any
 
 from ageneval.task.agents.langgraph import LangGraphTauAgent
-from ageneval.task.core import setup_instrumentation
+from ageneval.task.core import platform_evaluator, run_grader, setup_instrumentation
 from ageneval.task.datasets.tau_bench import load_tau_bench_tasks
 from ageneval.task.runners import (
     DEFAULT_SAMPLE_SIZE,
     build_experiment_metadata,
     build_run_identity,
+    grader_for_dataset,
     sample_dataset,
+    wrap_agent_for_dataset,
 )
 
 logger = logging.getLogger(__name__)
@@ -67,101 +63,57 @@ def _build_examples(tasks):
 
 
 def _make_task_fn(agent: LangGraphTauAgent):
-    """Build a a2e-experiment-compatible task function backed by ``agent``."""
+    """Build an A2E task that runs the official session and grader once."""
     from ageneval.task.core import TaskInput
 
-    def task_fn(input: dict, metadata: dict) -> dict:
+    runner = wrap_agent_for_dataset("tau-bench", agent)
+    grader = grader_for_dataset("tau-bench")
+
+    def task_fn(input: dict, expected: dict, metadata: dict) -> dict:
         task_input = TaskInput(
             task_id=metadata.get("task_id", "?"),
             instruction=input.get("instruction", ""),
             initial_state=input.get("initial_state", {}),
+            expected_outputs=expected.get("expected_outputs") or (),
+            expected_actions=expected.get("expected_actions") or (),
+            metadata=metadata,
         )
-        trace = asyncio.run(agent.run(task_input))
-        return {
+        trace = asyncio.run(runner.run(task_input))
+        output = {
             "final_answer": trace.final_answer or "",
             "tool_calls": [tc.name for tc in trace.tool_calls],
+            "tool_call_records": [
+                {
+                    "name": tc.name,
+                    "arguments": dict(tc.arguments),
+                    "result": tc.result,
+                    "error": tc.error,
+                }
+                for tc in trace.tool_calls
+            ],
             "status": trace.status,
             "turns": trace.turns,
             "trace_id": trace.trace_id,
             "error": trace.error,
+            **dict(trace.raw),
         }
+        report = asyncio.run(
+            run_grader(
+                grader,
+                output=output,
+                expected=expected,
+                input={
+                    "instruction": task_input.instruction,
+                    "initial_state": task_input.initial_state,
+                },
+                metadata=metadata,
+                example=task_input,
+            )
+        )
+        output["grade_report"] = report.as_dict()
+        return output
 
     return task_fn
-
-
-def _build_evaluators(*, llm: Any | None):
-    """Mix of code-based + LLM-as-judge evaluators (a2e-evals)."""
-
-    evaluators: list = []
-
-    # 1. Code-based: every expected output must appear in the final answer.
-    def expected_substring_match(output: dict, expected: dict) -> float:
-        answer = (output or {}).get("final_answer", "")
-        if not answer:
-            return 0.0
-        hits = sum(1 for s in (expected or {}).get("expected_outputs", []) if str(s).lower() in answer.lower())
-        denom = max(1, len((expected or {}).get("expected_outputs", [])))
-        return hits / denom
-
-    expected_substring_match.__name__ = "expected_substring_match"
-    evaluators.append(expected_substring_match)
-
-    # 2. Code-based: expected tool names appear in the call list.
-    def tool_call_recall(output: dict, expected: dict) -> float:
-        called = set((output or {}).get("tool_calls", []))
-        expected_names = {a.get("name") for a in (expected or {}).get("expected_actions", []) if a.get("name")}
-        if not expected_names:
-            return 1.0
-        return len(called & expected_names) / len(expected_names)
-
-    tool_call_recall.__name__ = "tool_call_recall"
-    evaluators.append(tool_call_recall)
-
-    # 3. Code-based: exact_match on final answer == first expected output.
-    def exact_first_expected(output: dict, expected: dict) -> float:
-        answer = (output or {}).get("final_answer", "")
-        ref = ((expected or {}).get("expected_outputs") or [""])[0]
-        return float(answer.strip().lower() == str(ref).strip().lower())
-
-    exact_first_expected.__name__ = "exact_first_expected"
-    evaluators.append(exact_first_expected)
-
-    # 4. LLM-as-judge (prompted-text fallback that works with reasoner models
-    # which do not support tool_choice / structured_output).
-    if llm is not None:
-        import re
-
-        prompt_tmpl = (
-            "You are an evaluator. Decide whether the agent's answer satisfies the user's request.\n"
-            "Return EXACTLY one line: SCORE=<0 or 1>; EXPLANATION=<one sentence>\n\n"
-            "User instruction: {instruction}\n"
-            "Agent answer: {answer}\n"
-            "Expected answer hint: {expected}\n"
-        )
-
-        def llm_correctness(output: dict, expected: dict, input: dict) -> Any:
-            prompt = prompt_tmpl.format(
-                instruction=input.get("instruction", ""),
-                answer=(output or {}).get("final_answer", "") or "(no answer)",
-                expected=((expected or {}).get("expected_outputs") or [""])[0],
-            )
-            try:
-                text = llm.generate_text(prompt=prompt)  # type: ignore[attr-defined]
-            except Exception as exc:
-                return {"score": 0.0, "label": "error", "explanation": str(exc)[:200]}
-            m_score = re.search(r"SCORE\s*=\s*([01](?:\.\d+)?)", text or "")
-            m_expl = re.search(r"EXPLANATION\s*=\s*(.+?)(?:\n|$)", text or "")
-            score = float(m_score.group(1)) if m_score else 0.0
-            return {
-                "score": score,
-                "label": "correct" if score >= 0.5 else "incorrect",
-                "explanation": (m_expl.group(1) if m_expl else (text or ""))[:500],
-            }
-
-        llm_correctness.__name__ = "llm_correctness"
-        evaluators.append(llm_correctness)
-
-    return evaluators
 
 
 def main() -> int:
@@ -175,7 +127,6 @@ def main() -> int:
     parser.add_argument("--model", default=None, help="overrides A2E_LANGGRAPH_MODEL")
     parser.add_argument("--api-base", default=None, help="overrides OPENAI_API_BASE")
     parser.add_argument("--api-key", default=None, help="overrides OPENAI_API_KEY")
-    parser.add_argument("--no-llm-judge", action="store_true", help="skip LLM-as-judge evaluator")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s [%(levelname)s] %(message)s")
@@ -234,24 +185,10 @@ def main() -> int:
     # 5. Build the A2E experiment task.
     task_fn = _make_task_fn(agent)
 
-    # 6. Build evaluators (code + optional LLM-as-judge).
-    judge_llm = None
-    if not args.no_llm_judge:
-        try:
-            from a2e.evals.llm import LLM  # type: ignore
-
-            judge_kwargs: dict[str, Any] = {
-                "provider": "openai",
-                "model": args.model or os.environ.get("A2E_LANGGRAPH_MODEL") or "gpt-4o-mini",
-            }
-            if args.api_base or os.environ.get("OPENAI_API_BASE"):
-                judge_kwargs["base_url"] = args.api_base or os.environ["OPENAI_API_BASE"]
-            if args.api_key or os.environ.get("OPENAI_API_KEY"):
-                judge_kwargs["api_key"] = args.api_key or os.environ["OPENAI_API_KEY"]
-            judge_llm = LLM(**judge_kwargs)
-        except Exception as exc:
-            logger.warning("LLM judge construction failed: %s — skipping", exc)
-    evaluators = _build_evaluators(llm=judge_llm)
+    # 6. The task embeds the benchmark grade; this adapter persists it through
+    # the platform's existing experiment annotation boundary.
+    grader = grader_for_dataset("tau-bench")
+    platform_graders = [platform_evaluator(grader)]
 
     # 7. Run the experiment.
     from a2e.client.experiments import run_experiment  # type: ignore
@@ -260,7 +197,7 @@ def main() -> int:
     ran = run_experiment(
         dataset=dataset,
         task=task_fn,
-        evaluators=evaluators,
+        evaluators=platform_graders,
         experiment_name=args.experiment_name or identity.experiment_name,
         experiment_description=(
             f"tau-bench {args.domain} run {identity.run_id} via langgraph"

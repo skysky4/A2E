@@ -27,6 +27,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ageneval.task.core.dataset import TaskInput
+from ageneval.task.core.grading import GradeReport, GraderSpec
 from ageneval.task.datasets.swe_bench_pro.harness import get_instance_scripts
 
 logger = logging.getLogger(__name__)
@@ -199,3 +200,72 @@ def setup_swe_bench_pro(task: TaskInput, sandbox) -> None:
         ["bash", "-lc", f"cd /app && git reset --hard {base_commit} && git checkout {base_commit}"],
         timeout=300,
     )
+
+
+def _swe_metric(output: Mapping[str, Any], raw_key: str) -> Any:
+    """Read live-grader keys or their historical platform-prefixed form."""
+    return output.get(raw_key, output.get(f"swe_{raw_key}"))
+
+
+def _fraction(passed: Any, total: Any) -> float:
+    if not isinstance(passed, (int, float)) or not isinstance(total, (int, float)):
+        return 0.0
+    return float(passed) / float(total) if total else 0.0
+
+
+def grade_swe_bench_pro_output(
+    output: Mapping[str, Any],
+    expected: Mapping[str, Any] | None = None,
+    input: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> GradeReport:
+    """Build platform metrics from the existing live Scale-harness result."""
+    del expected, input, metadata
+    resolved = bool(output.get("resolved"))
+    score = float(resolved)
+    f2p_passed = _swe_metric(output, "f2p_passed")
+    f2p_total = _swe_metric(output, "f2p_total")
+    p2p_passed = _swe_metric(output, "p2p_passed")
+    p2p_total = _swe_metric(output, "p2p_total")
+    return GradeReport(
+        score=score,
+        passed=resolved,
+        metrics={
+            "swe_resolved": score,
+            "swe_fail_to_pass": _fraction(f2p_passed, f2p_total),
+            "swe_pass_to_pass": _fraction(p2p_passed, p2p_total),
+        },
+        metadata={
+            "status": output.get("status", output.get("swe_status")),
+            "f2p_passed": f2p_passed,
+            "f2p_total": f2p_total,
+            "p2p_passed": p2p_passed,
+            "p2p_total": p2p_total,
+        },
+        error=output.get("score_error") or output.get("error"),
+        explanation="Official SWE-bench Pro resolution from the live Scale harness.",
+        official=True,
+        source="ScaleAI/SWE-bench_Pro",
+        version="scaleapi/SWE-bench_Pro-os",
+    )
+
+
+GRADER = GraderSpec(
+    id="swe_resolved",
+    grade=score_swe_bench_pro,
+    summarize=grade_swe_bench_pro_output,
+    mode="inline",
+    official=True,
+    source="ScaleAI/SWE-bench_Pro",
+    version="scaleapi/SWE-bench_Pro-os",
+)
+post_platform_grade = grade_swe_bench_pro_output
+
+__all__ = [
+    "GRADER",
+    "grade_swe_bench_pro_output",
+    "grade_with_patch",
+    "post_platform_grade",
+    "score_swe_bench_pro",
+    "setup_swe_bench_pro",
+]

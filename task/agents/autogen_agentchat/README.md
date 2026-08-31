@@ -39,7 +39,7 @@ uv run python -m ...   # within this isolated environment
 ```
 
 The standalone lock also includes the task benchmark adapters, Model Gateway,
-and evaluator helpers used by `run_campaign.py`. The main Campaign Controller
+and benchmark grader helpers used by `run_campaign.py`. The main Campaign Controller
 delegates AutoGen Trials to this interpreter and keeps their global resource
 permits in the main process.
 

@@ -11,12 +11,16 @@ Public API:
 """
 
 from ageneval.task.datasets.tau3.binding import build_tau3_binding
+from ageneval.task.datasets.tau3.grader import GRADER, GRADER_METADATA, tau3_grader
 from ageneval.task.datasets.tau3.loader import Tau3Dataset, load_tau3_tasks
 from ageneval.task.datasets.tau3.tools import get_tau3_tool_schemas
 
 __all__ = [
+    "GRADER",
+    "GRADER_METADATA",
     "Tau3Dataset",
     "build_tau3_binding",
     "get_tau3_tool_schemas",
     "load_tau3_tasks",
+    "tau3_grader",
 ]

@@ -6,8 +6,8 @@
 #   Terminal 2:  cd task && set -a; . ../.env; set +a && bash ../example/run_examples.sh
 #
 # Each step runs a real experiment and pauses so you can browse results at
-# http://localhost:6006 before moving on. Evaluation is always done separately
-# via the standalone eval pipeline (Step 4).
+# http://localhost:6006 before moving on. Each benchmark runs its primary grader
+# automatically; the standalone eval pipeline in Step 4 adds diagnostic metrics.
 
 set -e
 
@@ -77,18 +77,17 @@ echo "    Runs the agent inside a Docker container. It edits real code and the"
 echo "    test suite grades the result. Requires Docker."
 echo ""
 echo "    Sandbox datasets are scored inside the container via the official test"
-echo "    harness. Use --evaluators to surface the result:"
-echo "      swe_resolved, swe_fail_to_pass, swe_pass_to_pass  (SWE-bench)"
+echo "    harness. The benchmark's primary grader is selected automatically:"
+echo "      swe_resolved                                      (SWE-bench)"
 echo "        resolved:      all target tests now pass"
 echo "        fail_to_pass:  fraction of bug tests fixed"
 echo "        pass_to_pass:  fraction of existing tests not broken"
 echo "      tb_resolved                                       (Terminal-Bench)"
-echo "    These are pass-through — they read the pre-computed score from the sandbox"
+echo "    Auxiliary metrics are recorded with the primary benchmark score."
 echo ""
 echo "    Skipping — uncomment below to run:"
 echo "    # uv run python examples/run_experiment.py \\"
-echo "    #     --dataset swe-bench-lite --agent agno --n 1 \\"
-echo "    #     --evaluators swe_resolved"
+echo "    #     --dataset swe-bench-lite --agent agno --n 1"
 
 # Tip: pin a pre-cached instance to avoid downloading a random image:
 #   A2E_SWE_INSTANCE=<instance_id>        swe-bench-lite / swe-bench-verified
@@ -99,7 +98,7 @@ echo "    #     --evaluators swe_resolved"
 
 # Uncomment to enable:
 # uv run python examples/run_experiment.py \
-#     --dataset swe-bench-lite --agent agno --n 1 --evaluators swe_resolved \
+#     --dataset swe-bench-lite --agent agno --n 1 \
 #     2>&1 | tee /tmp/a2e_example_3.log
 # EXP_ID=$(grep -oP 'experiment_id:\s*\K.+' /tmp/a2e_example_3.log | head -1 || true)
 # if [ -n "$EXP_ID" ]; then
@@ -117,8 +116,8 @@ echo "    server, scores them, and writes results back."
 echo ""
 echo "    --part all runs diagnostic metrics (plan, tool, correctness, efficiency,"
 echo "    safety). It does NOT include sandbox pass/fail scores (tb_resolved,"
-echo "    swe_resolved...). Those are only available via --evaluators during"
-echo "    experiment execution (see Step 3)."
+echo "    swe_resolved...). Those are produced automatically by each benchmark's"
+echo "    primary grader during experiment execution (see Step 3)."
 echo ""
 
 if [ ${#EXPERIMENT_IDS[@]} -eq 0 ]; then

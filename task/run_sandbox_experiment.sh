@@ -32,5 +32,4 @@ export NO_PROXY="$no_proxy"
 
 cd "$task_dir"
 exec uv run --frozen python examples/run_experiment.py \
-  --dataset swe-bench-lite --agent agno --n 1 \
-  --evaluators swe_resolved,swe_fail_to_pass,swe_pass_to_pass
+  --dataset swe-bench-lite --agent agno --n 1

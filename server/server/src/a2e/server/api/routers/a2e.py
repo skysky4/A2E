@@ -2,7 +2,7 @@
 
 Endpoints exposed to the browser:
 
-* ``GET  /v1/a2e/registry``     — list available datasets, agents, evaluators
+* ``GET  /v1/a2e/registry``     — list available datasets, agents, and graders
 * ``POST /v1/a2e/run-experiment`` — launch an A2E experiment in a background
   worker; returns immediately with a job id + experiment id.
 * ``GET  /v1/a2e/jobs/{job_id}`` — poll job status
@@ -20,7 +20,7 @@ import logging
 import os
 import threading
 import uuid
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -86,7 +86,6 @@ def _set_job(job_id: str, **patch: Any) -> None:
 class RunRequest(BaseModel):
     dataset: str
     agent: str
-    evaluators: List[str]
     # Accept either a positive integer (e.g. 1, 50) or the literal "all" to
     # let the loader decide based on dataset size. The worker normalizes
     # "all" → None before invoking the loader.
@@ -108,7 +107,7 @@ class RunResponse(BaseModel):
 
 @a2e_router.get("/registry")
 def get_registry() -> JSONResponse:
-    """Return the names of every dataset / agent / evaluator known to A2E."""
+    """Return every dataset, agent, and benchmark-owned grader known to A2E."""
     try:
         from ageneval.task.runners import list_registries  # type: ignore
     except ImportError as exc:
@@ -120,7 +119,11 @@ def get_registry() -> JSONResponse:
 def run_experiment(req: RunRequest, background: BackgroundTasks) -> RunResponse:
     """Kick off an experiment in a background thread and return immediately."""
     try:
-        from ageneval.task.runners import AGENTS, DATASETS  # type: ignore
+        from ageneval.task.runners import (  # type: ignore
+            AGENTS,
+            DATASETS,
+            grader_for_dataset,
+        )
     except ImportError as exc:
         raise HTTPException(status_code=503, detail=f"task layer not installed: {exc}")
 
@@ -128,14 +131,13 @@ def run_experiment(req: RunRequest, background: BackgroundTasks) -> RunResponse:
         raise HTTPException(status_code=400, detail=f"unknown dataset: {req.dataset}")
     if req.agent not in AGENTS:
         raise HTTPException(status_code=400, detail=f"unknown agent: {req.agent}")
-    if not req.evaluators:
-        raise HTTPException(status_code=400, detail="at least one evaluator is required")
+    grader_spec = grader_for_dataset(req.dataset)
 
     job_id = _new_job(
         {
             "dataset": req.dataset,
             "agent": req.agent,
-            "evaluators": req.evaluators,
+            "grader": grader_spec.id,
             "n": req.n,
         }
     )
@@ -233,26 +235,6 @@ _HTML_PAGE = """<!DOCTYPE html>
     box-shadow:0 0 0 3px rgba(37,99,235,.15); }
   input::placeholder { color:#94a3b8; }
 
-  /* evaluator chip selector */
-  .eval-controls { display:flex; align-items:center; gap:8px; margin-bottom:8px;
-    font-size:11px; color:var(--muted); }
-  .eval-controls button.mini { background:transparent; color:var(--accent);
-    border:1px solid var(--border); padding:3px 10px; font-size:11px;
-    font-weight:500; letter-spacing:.3px; }
-  .eval-controls button.mini:hover { border-color:var(--accent); background:var(--accent-soft); }
-  .checks { display:flex; flex-wrap:wrap; gap:8px; }
-  .check { background:var(--surface); border:1px solid var(--border); border-radius:999px;
-    padding:6px 14px; cursor:pointer; font-size:12px; font-family:"Geist Mono",monospace;
-    user-select:none; transition:.15s; display:flex; align-items:center; gap:6px;
-    color:var(--muted); }
-  .check input { display:none; }
-  .check::before { content:""; width:10px; height:10px; border:1.5px solid var(--border);
-    border-radius:3px; display:inline-block; }
-  .check.active { background:var(--accent-soft); color:var(--accent);
-    border-color:var(--accent); font-weight:600; }
-  .check.active::before { background:var(--accent); border-color:var(--accent);
-    background-image: linear-gradient(45deg, transparent 40%, white 40% 60%, transparent 60%); }
-
   /* run button */
   .run-bar { display:flex; align-items:center; gap:14px; margin-top:20px;
     padding-top:18px; border-top:1px solid var(--border); }
@@ -320,18 +302,14 @@ _HTML_PAGE = """<!DOCTYPE html>
       <div class="row"><label>Dataset</label><select id="dataset"></select></div>
       <div class="row"><label>Agent framework</label><select id="agent"></select></div>
       <div class="row" style="align-items:start;">
-        <label>Evaluators <span style="font-weight:400;font-size:11px;color:var(--muted);">(pick any)</span></label>
-        <div>
-          <div class="eval-controls">
-            <button type="button" class="mini" id="eval-all">select all</button>
-            <button type="button" class="mini" id="eval-none">clear</button>
-            <span id="eval-count">0 selected</span>
-          </div>
-          <div id="evaluators" class="checks"></div>
+        <label>Automatic grader</label>
+        <div id="grader-meta" class="info-box" style="margin-top:0;">
+          <b id="grader-id">Loading…</b><br>
+          <span id="grader-details">Resolved from the selected benchmark.</span>
         </div>
       </div>
       <div class="row"><label>n (examples)</label><input id="n" type="number" value="1" min="1" max="20" /></div>
-      <div class="row"><label>Domain</label><input id="domain" placeholder="optional — retail / airline (for tau-bench / tau2)" /></div>
+      <div class="row"><label>Domain</label><input id="domain" placeholder="optional — retail / airline (for tau-bench / tau2 / tau3)" /></div>
     </div>
 
     <div class="card">
@@ -378,9 +356,9 @@ _HTML_PAGE = """<!DOCTYPE html>
     <div class="card">
       <h2>How A2E pages relate</h2>
       <div class="info-box" style="margin-top:0;">
-        <b>Run</b> (here) — pick dataset × agent × evaluators, launch a job.<br>
+        <b>Run</b> (here) — pick dataset × agent; its benchmark grader runs automatically.<br>
         <b>Datasets</b> — every dataset uploaded (tau-bench, mmlu, …).<br>
-        <b>Experiments</b> — past runs, per-example scores, evaluator breakdown.<br>
+        <b>Experiments</b> — past runs and per-example benchmark grader results.<br>
         <b>Projects</b> — raw OpenTelemetry traces (agent's full LLM + tool tree).<br>
         After Run finishes you'll get one-click jumps to the right page.
       </div>
@@ -392,15 +370,12 @@ _HTML_PAGE = """<!DOCTYPE html>
 const $ = (id) => document.getElementById(id);
 let currentJob = null;
 let pollHandle = null;
-const DEFAULT_ACTIVE = new Set(["exact_match","substring","llm_judge"]);
 
 function updateSummary() {
   const ds = $("dataset").value || "?";
   const ag = $("agent").value || "?";
-  const ev = Array.from(document.querySelectorAll('#evaluators .check.active')).map(e => e.dataset.name);
-  $("eval-count").textContent = ev.length + " selected";
-  $("summary").innerHTML = `<b>${ds}</b> × <b>${ag}</b> × <b>${ev.length || '(none)'}</b> eval(s)`;
-  $("run").disabled = ev.length === 0;
+  const grader = (DATASET_META[ds] && DATASET_META[ds].grader) || {};
+  $("summary").innerHTML = `<b>${ds}</b> × <b>${ag}</b> × grader <b>${grader.id || "?"}</b>`;
 }
 
 // Fixed render order for the agent <optgroup> labels — must match the
@@ -413,21 +388,17 @@ const AGENT_GROUP_ORDER = [
 let AGENT_META = {};
 let DATASET_META = {};
 
-// Pre-select the recommended evaluators for the chosen dataset (tool datasets
-// → trajectory + answer-quality metrics, QA → the metric for their answer
-// style). Mirrors `default_evaluators` in registry.py and the React launcher.
-function applyDatasetDefaults() {
+function updateGraderMetadata() {
   const ds = $("dataset").value;
-  const defaults = (DATASET_META[ds] && DATASET_META[ds].default_evaluators) || [];
-  if (!defaults.length) return;
-  const want = new Set(defaults);
-  document.querySelectorAll('#evaluators .check').forEach((l) => {
-    const on = want.has(l.dataset.name);
-    l.classList.toggle('active', on);
-    const cb = l.querySelector('input');
-    if (cb) cb.checked = on;
-  });
-  updateSummary();
+  const grader = (DATASET_META[ds] && DATASET_META[ds].grader) || {};
+  $("grader-id").textContent = grader.id || "Unavailable";
+  const details = [
+    grader.mode,
+    grader.official === true ? "official" : (grader.official === false ? "unofficial" : null),
+    grader.source,
+    grader.version,
+  ].filter(Boolean);
+  $("grader-details").textContent = details.join(" · ") || "Resolved from the selected benchmark.";
 }
 
 function syncAgentWarnings() {
@@ -472,34 +443,10 @@ async function loadRegistry() {
     });
     asel.appendChild(og);
   });
-  const ec = $("evaluators");
-  r.evaluators.forEach((e) => {
-    const lbl = document.createElement("label"); lbl.className = "check"; lbl.dataset.name = e;
-    const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = e;
-    lbl.appendChild(cb);
-    lbl.appendChild(document.createTextNode(e));
-    lbl.onclick = (ev) => {
-      ev.preventDefault();
-      lbl.classList.toggle("active");
-      cb.checked = lbl.classList.contains("active");
-      updateSummary();
-    };
-    if (DEFAULT_ACTIVE.has(e)) { lbl.classList.add("active"); cb.checked = true; }
-    ec.appendChild(lbl);
-  });
-  $("dataset").onchange = () => { applyDatasetDefaults(); updateSummary(); };
+  $("dataset").onchange = () => { updateGraderMetadata(); updateSummary(); };
   $("agent").onchange = () => { syncAgentWarnings(); updateSummary(); };
-  // initial warning state + recommended evaluators for the first dataset
   syncAgentWarnings();
-  applyDatasetDefaults();
-  $("eval-all").onclick = () => {
-    document.querySelectorAll('#evaluators .check').forEach((l) => l.classList.add('active'));
-    updateSummary();
-  };
-  $("eval-none").onclick = () => {
-    document.querySelectorAll('#evaluators .check').forEach((l) => l.classList.remove('active'));
-    updateSummary();
-  };
+  updateGraderMetadata();
   updateSummary();
 }
 
@@ -522,14 +469,8 @@ function setStatus(name) {
 }
 
 async function startRun() {
-  const evaluators = Array.from(document.querySelectorAll('#evaluators .check.active'))
-    .map((el) => el.dataset.name);
-  if (!evaluators.length) {
-    appendLog("✗ pick at least one evaluator", "err");
-    return;
-  }
   const payload = {
-    dataset: $("dataset").value, agent: $("agent").value, evaluators,
+    dataset: $("dataset").value, agent: $("agent").value,
     n: parseInt($("n").value || "1", 10),
     domain: $("domain").value || null, model: $("model").value || null,
     api_base: $("api_base").value || null, api_key: $("api_key").value || null,
@@ -613,13 +554,20 @@ def a2e_html_page() -> HTMLResponse:
 
 def _run_experiment_worker(job_id: str, payload: Dict[str, Any]) -> None:
     """Runs the experiment to completion inside a worker thread."""
-    from ageneval.task.core import setup_instrumentation, TaskInput  # type: ignore
+    from ageneval.task.core import (  # type: ignore
+        SandboxScoringRunner,
+        TaskInput,
+        platform_evaluator,
+        setup_instrumentation,
+    )
     from ageneval.task.runners import (  # type: ignore
         AGENTS,
         DATASETS,
+        apply_run_settings,
         framework_for_agent,
-        make_llm_judge,
-        EVALUATORS,
+        grader_for_dataset,
+        resolve_run_settings,
+        wrap_agent_for_dataset,
     )
 
     try:
@@ -646,6 +594,9 @@ def _run_experiment_worker(job_id: str, payload: Dict[str, Any]) -> None:
 
         # Load dataset + binding
         ds_entry = DATASETS[payload["dataset"]]
+        grader_spec = grader_for_dataset(payload["dataset"])
+        run_settings = resolve_run_settings(ds_entry)
+        apply_run_settings(run_settings)
         # Normalize n: accept int, "all", or numeric strings; "all" → None
         # (let the loader return its full default split).
         _raw_n = payload.get("n", 1)
@@ -663,9 +614,16 @@ def _run_experiment_worker(job_id: str, payload: Dict[str, Any]) -> None:
             n_value = int(_raw_n) if _raw_n is not None else None
         load_kwargs: Dict[str, Any] = {"n": n_value}
         bind_kwargs: Dict[str, Any] = {}
-        if payload["dataset"] in ("tau-bench", "tau2") and payload.get("domain"):
-            load_kwargs["domain"] = payload["domain"]
-            bind_kwargs["domain"] = payload["domain"]
+        if payload["dataset"] in (
+            "tau-bench",
+            "tau2",
+            "tau3",
+            "tau3bench",
+            "tau3-bench",
+        ):
+            domain = payload.get("domain") or "retail"
+            load_kwargs["domain"] = domain
+            bind_kwargs["domain"] = domain
         dataset = ds_entry["load"](**load_kwargs)
         binding = ds_entry["bind"](**bind_kwargs)
         _set_job(job_id, message=f"loaded dataset: {dataset.name} ({len(dataset)} tasks)")
@@ -678,7 +636,19 @@ def _run_experiment_worker(job_id: str, payload: Dict[str, Any]) -> None:
             if payload.get(override):
                 os.environ[env_key] = payload[override]
                 agent_kwargs[override] = payload[override]
+        for key, value in (ds_entry.get("agent_overrides") or {}).items():
+            agent_kwargs.setdefault(key, value)
+        agent_kwargs.setdefault("max_turns", run_settings["max_turns"])
+        agent_kwargs.setdefault("max_steps", run_settings["max_turns"])
         agent = AGENTS[payload["agent"]]["build"](**agent_kwargs)
+        runner: Any = wrap_agent_for_dataset(payload["dataset"], agent)
+        is_sandbox = ds_entry.get("kind") == "sandbox"
+        if is_sandbox:
+            runner = SandboxScoringRunner(
+                inner=agent,
+                grader=grader_spec,
+                setup_fn=ds_entry.get("setup"),
+            )
         _set_job(job_id, message=f"agent ready: {agent.name}")
 
         # Upload dataset to a2e
@@ -696,7 +666,13 @@ def _run_experiment_worker(job_id: str, payload: Dict[str, Any]) -> None:
                     "expected_outputs": list(t.expected_outputs),
                     "expected_actions": list(t.expected_actions),
                 },
-                "metadata": {"task_id": t.task_id, **dict(t.metadata)},
+                "metadata": {
+                    "task_id": t.task_id,
+                    **dict(t.metadata),
+                    "_expected_outputs": list(t.expected_outputs),
+                    "_expected_actions": list(t.expected_actions),
+                    **({"sandbox": dict(t.sandbox)} if t.sandbox is not None else {}),
+                },
             }
             for t in dataset.tasks
         ]
@@ -710,59 +686,70 @@ def _run_experiment_worker(job_id: str, payload: Dict[str, Any]) -> None:
             a2e_dataset = client.datasets.get_dataset(dataset=ds_name)
         _set_job(job_id, message=f"A2E dataset ready: {ds_name}")
 
-        # Build evaluators
-        judge_llm = None
-        if "llm_judge" in payload["evaluators"]:
-            try:
-                from a2e.evals.llm import LLM  # type: ignore
-
-                judge_kwargs: Dict[str, Any] = {
-                    "provider": "openai",
-                    "model": payload.get("model")
-                    or os.environ.get("A2E_MODEL")
-                    or os.environ.get("A2E_LANGGRAPH_MODEL")
-                    or "qwen-plus",
-                }
-                if payload.get("api_base") or os.environ.get("OPENAI_API_BASE"):
-                    judge_kwargs["base_url"] = payload.get("api_base") or os.environ["OPENAI_API_BASE"]
-                if payload.get("api_key") or os.environ.get("OPENAI_API_KEY"):
-                    judge_kwargs["api_key"] = payload.get("api_key") or os.environ["OPENAI_API_KEY"]
-                judge_llm = LLM(**judge_kwargs)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("LLM judge build failed: %s", exc)
-
-        evaluators: list = []
-        for name in payload["evaluators"]:
-            if name == "llm_judge":
-                if judge_llm is not None:
-                    evaluators.append(make_llm_judge(judge_llm))
-            elif name in EVALUATORS:
-                evaluators.append(EVALUATORS[name])
-
-        # Task fn
+        # Sandbox graders run inline while their environment is alive; posthoc
+        # graders run through the platform adapter after this task returns.
         def task_fn(input: dict, metadata: dict) -> dict:
             t = TaskInput(
                 task_id=metadata.get("task_id", "?"),
                 instruction=input.get("instruction", ""),
                 initial_state=input.get("initial_state", {}),
+                expected_actions=metadata.get("_expected_actions") or [],
+                expected_outputs=metadata.get("_expected_outputs") or [],
+                metadata=metadata,
+                sandbox=metadata.get("sandbox"),
             )
-            trace = asyncio.run(agent.run(t))
-            return {
+            trace = asyncio.run(runner.run(t))
+            output = {
                 "final_answer": trace.final_answer or "",
                 "tool_calls": [tc.name for tc in trace.tool_calls],
+                "tool_call_records": [
+                    {
+                        "name": tc.name,
+                        "arguments": dict(tc.arguments),
+                        "result": tc.result,
+                        "error": tc.error,
+                    }
+                    for tc in trace.tool_calls
+                ],
                 "status": trace.status,
                 "turns": trace.turns,
                 "trace_id": trace.trace_id,
                 "error": trace.error,
             }
+            grade_report = dict(trace.raw).get("grade_report")
+            if isinstance(grade_report, dict):
+                output["grade_report"] = grade_report
+            return output
 
         from a2e.client.experiments import run_experiment as a2e_run_experiment  # type: ignore
+
+        grader_runtime = None
+        if grader_spec.factory is not None:
+            from a2e.evals.llm import LLM
+
+            use_anthropic = payload["agent"] == "claude-sdk"
+            grader_kwargs: Dict[str, Any] = {
+                "provider": "anthropic" if use_anthropic else "openai",
+                "model": payload.get("model")
+                or os.environ.get("A2E_GRADER_MODEL")
+                or ("claude-sonnet-4-5" if use_anthropic else "gpt-4o-mini"),
+                "api_key": payload.get("api_key")
+                or os.environ.get(
+                    "ANTHROPIC_API_KEY" if use_anthropic else "OPENAI_API_KEY",
+                    "",
+                ),
+            }
+            if payload.get("api_base"):
+                grader_kwargs["base_url"] = payload["api_base"]
+            grader_runtime = LLM(**grader_kwargs)
 
         _set_job(job_id, message="running experiment …")
         ran = a2e_run_experiment(
             dataset=a2e_dataset,
             task=task_fn,
-            evaluators=evaluators,
+            # Compatibility bridge for the existing a2e-client annotation API;
+            # grader selection and score semantics remain benchmark-owned.
+            evaluators=[platform_evaluator(grader_spec, grader_runtime)],
             experiment_name=f"{payload['dataset']}-{payload['agent']}",
         )
         # ``RanExperiment`` is a TypedDict — read the keys directly so we

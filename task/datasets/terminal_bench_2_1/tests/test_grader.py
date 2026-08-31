@@ -6,7 +6,9 @@ from types import SimpleNamespace
 
 from ageneval.task.core.dataset import TaskInput
 from ageneval.task.datasets.terminal_bench_2_1.grader import (
+    GRADER,
     _test_contents,
+    grade_terminal_bench_2_1_output,
     score_terminal_bench_2_1,
 )
 
@@ -121,3 +123,21 @@ def test_reward_and_ctrf_must_both_confirm_success(tmp_path: Path, monkeypatch) 
     ).encode()
     assert artifact["size_bytes"] == ctrf_path.stat().st_size
     assert len(artifact["sha256"]) == 64
+
+
+def test_inline_spec_and_post_platform_metrics() -> None:
+    report = grade_terminal_bench_2_1_output(
+        {
+            "resolved": True,
+            "tb_reward": "1",
+            "status": "graded",
+            "tb_verifier_phase": "complete",
+        }
+    )
+
+    assert GRADER.id == "tb_resolved"
+    assert GRADER.mode == "inline"
+    assert GRADER.grade is score_terminal_bench_2_1
+    assert GRADER.official is True
+    assert report.score == 1.0
+    assert report.metrics == {"tb_resolved": 1.0, "tb_reward": 1.0}
