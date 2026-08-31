@@ -100,6 +100,10 @@ uv run --frozen python examples/run_experiment.py \
   --full                     # 跑官方 split，忽略 --n
   --sample-seed 20260816 \
   --domain  retail           # tau-bench / tau2 / tau3
+  --max-turns 30 \
+  --max-tokens 4096 \
+  --llm-timeout 180 \
+  --run-deadline 1100
 ```
 
 | 旗标 | 作用 |
@@ -108,11 +112,15 @@ uv run --frozen python examples/run_experiment.py \
 | `--dataset` | 数据集名（必填） |
 | `--agent` | agent harness（默认 `agno`） |
 | `--model` | 覆盖本次的 `A2E_MODEL` |
-| `--evaluators` | 逗号分隔打分器 |
+| `--evaluators` | 逗号分隔 grader（默认：该 benchmark 的官方 grader） |
 | `--n` | 样本数（绝对数量，随机无放回） |
 | `--full` | 跑官方 split（忽略 `--n`） |
 | `--sample-seed` | 可复现抽样（官方格子用 `20260816`） |
 | `--domain` | `retail` / `airline`（tau-bench / tau2 / tau3） |
+| `--max-turns` | 覆盖官方 `max_turns`（启动时打印解析后的值） |
+| `--max-tokens` | 覆盖官方 `max_tokens` |
+| `--llm-timeout` | 覆盖官方单次 LLM 超时（秒） |
+| `--run-deadline` | 覆盖官方整段 agent wall（秒） |
 
 ```bash
 cd task
@@ -121,7 +129,11 @@ uv run --frozen python examples/run_experiment.py --list
 
 ### 官方格子预算
 
-`scripts/run_n1.sh` 与 `scripts/run_full.sh` 会套用同一套按数据集上限（可用环境变量覆盖）：
+每个 benchmark 的官方数字写在 `task/runners/src/ageneval/task/runners/registry.py`
+对应条目的 `official_settings` 上。CLI 启动时会打印解析结果。优先级：
+`--max-turns` / `--max-tokens` / `--llm-timeout` / `--run-deadline` → 环境变量
+（`A2E_MAX_TURNS`、`A2E_MAX_TOKENS`、`A2E_LLM_TIMEOUT`、`A2E_RUN_DEADLINE`）→
+`official_settings`。`scripts/run_n1.sh` 与 `scripts/run_full.sh` 用环境变量套同一套上限（仍可在数据集名后面继续传 CLI 旗标）：
 
 | 数据集 | `max_turns` | `max_tokens` | LLM 超时 | wall / deadline |
 |--------|-------------|--------------|----------|-----------------|
@@ -138,16 +150,16 @@ uv run --frozen python examples/run_experiment.py --list
 
 | Benchmark | 类型 | 内置默认评测指标 | 沙箱 |
 |-----------|------|----------------------|------|
-| `tau-bench` | Tool | `tool_recall`, `llm_judge` | / |
-| `tau2` | Tool | `tool_recall`, `llm_judge` | / |
-| `tau3` | Tool | `tool_recall`, `llm_judge` | / |
+| `tau-bench` | Tool | `tau_grader`（Sierra `calculate_reward` pass^1） | / |
+| `tau2` | Tool | `tau_grader`（Sierra `calculate_reward` pass^1） | / |
+| `tau3` | Tool | `tau_grader`（Sierra `calculate_reward` pass^1） | / |
 | `traject-bench` | Tool | `tool_recall`, `llm_judge` | / |
-| `deepsearchqa` | Tool | `deepsearch_match`, `tool_recall` | HF [`google/deepsearchqa`](https://huggingface.co/datasets/google/deepsearchqa) |
+| `deepsearchqa` | Tool | `deepsearch_grader` | HF [`google/deepsearchqa`](https://huggingface.co/datasets/google/deepsearchqa) |
 | `mmlu` | QA | `mc_letter`, `llm_judge` | / |
 | `gsm8k` | QA | `numeric_match`, `llm_judge` | / |
 | `humaneval` | QA | `humaneval_pass` | / |
 | `persistbench` | QA | `substring`, `llm_judge` | / |
-| `gdpval-aa` | QA | `llm_judge` | HF [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) |
+| `gdpval-aa` | QA | `gdp_grader`（格子内 rubric judge；pairwise Elo 不在格子内跑） | HF [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) |
 | `gpqa` | QA | `mc_letter`, `llm_judge` | / |
 | `mmlu-pro` | QA | `mc_letter`, `llm_judge` | / |
 | `arc-challenge` | QA | `mc_letter`, `llm_judge` | / |

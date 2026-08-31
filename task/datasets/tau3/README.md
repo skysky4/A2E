@@ -25,8 +25,8 @@ reads any audio. `metadata.modality` is always `"text"`.
 ## How it plugs into A2E
 
 Registered as `tau3` in `task/runners/.../registry.py` with `kind="tool"` and
-default evaluators `tool_recall` + `llm_judge`. The binding exposes the real
-domain tool names (so `tool_recall` is meaningful) with a JSON-action protocol;
+default grader `tau_grader` (Sierra ``calculate_reward`` pass^1). The binding exposes the real
+domain tool names with a JSON-action protocol;
 the executor serves light state lookups and acknowledges other tools (same
 approach as the τ2 adapter). All 9 A2E agents drive it unchanged.
 
@@ -34,5 +34,5 @@ approach as the τ2 adapter). All 9 A2E agents drive it unchanged.
 
 ```bash
 cd task && uv run --frozen python examples/run_experiment.py \
-    --dataset tau3 --agent agno --evaluators tool_recall,llm_judge --n 3
+    --dataset tau3 --agent agno --evaluators tau_grader --n 3
 ```

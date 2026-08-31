@@ -24,26 +24,16 @@ from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, 
 
 # Unified model: default to .env's A2E_MODEL (a non-reasoning instruct model);
 # fall back to qwen-plus.
-from ageneval.task.core.budget import llm_timeout as _llm_timeout
-from ageneval.task.core.budget import max_retries as _max_retries
-from ageneval.task.core.budget import max_tokens as _budget_tokens
-from ageneval.task.core.budget import max_turns as _default_turns
-from ageneval.task.core.budget import run_deadline as _run_deadline
-
 _DEFAULT_MODEL = os.environ.get("A2E_MODEL") or "qwen-plus"
-_MAX_TURNS = _default_turns()
+_MAX_TURNS = 8
 
 # Per-request LLM timeout + retries. Without these a stalled connection to the
 # OpenAI-compatible endpoint hangs the whole run forever (observed: a single
 # qwen-max call stuck >20 min with the container idle). A bounded timeout makes
 # a hung call fail fast and retry; a persistent failure raises and is recorded
 # as an error trace (the task still gets a trajectory) so the run never stalls.
-_LLM_TIMEOUT = _llm_timeout()
-_LLM_MAX_RETRIES = _max_retries()
-# Reasoning models (e.g. kimi-k3) spend completion tokens on hidden
-# reasoning_content before they emit a tool call. A low default cap makes
-# finish_reason=length with empty content and zero tools.
-_MAX_TOKENS = _budget_tokens()
+_LLM_TIMEOUT = float(os.environ.get("A2E_LLM_TIMEOUT", "120"))
+_LLM_MAX_RETRIES = int(os.environ.get("A2E_LLM_MAX_RETRIES", "2"))
 
 # Whole-agent wall-clock deadline. agno's ``Agent.run`` is a *synchronous* call
 # run via ``asyncio.to_thread``; a slow sandbox tool (e.g. compiling a C-extension
@@ -54,7 +44,7 @@ _MAX_TOKENS = _budget_tokens()
 # an outer ``asyncio.wait_for`` hard-cancel the thread and lose everything. Keep
 # this BELOW the experiment runner's task cap so this branch wins and the
 # trajectory (plus the sandbox diff/score) survives.
-_RUN_DEADLINE = _run_deadline()
+_RUN_DEADLINE = float(os.environ.get("A2E_AGNO_DEADLINE", "600"))
 
 # Many dataset bindings prescribe a text JSON-action protocol ({"action": ...})
 # that suits text-loop agents (e.g. langgraph). agno drives the model through
@@ -66,61 +56,8 @@ _NATIVE_TOOL_HINT = (
     "real callable functions. To take any action you MUST call the corresponding "
     "function directly with its arguments. Do NOT reply with an action as a JSON "
     "object in plain text — actually invoke the function. Explore and act via tool "
-    "calls first; only write a plain-text final answer once you are done. "
-    "Never ask the user for email/name/zip already present in the task — "
-    "call find_user_id_by_name_zip or find_user_id_by_email (or the equivalent "
-    "lookup tool) with those values. Do not write 'please provide your email'."
+    "calls first; only write a plain-text final answer once you are done."
 )
-_FORCE_TOOL_HINT = (
-    "\n\nRETRY: your previous reply asked the user a question or skipped tools. "
-    "The task text already contains every identifier you need. "
-    "Call a real function NOW. Do not ask the user anything."
-)
-_DELIVERABLE_HINT = (
-    "\n\nWrite the complete deliverable now as plain text. "
-    "No JSON wrapper, no plan, no tool calls, no 'I will start'."
-)
-_RETAIL_WRITE = {
-    "cancel_pending_order",
-    "exchange_delivered_order_items",
-    "return_delivered_order_items",
-    "modify_pending_order_items",
-    "modify_pending_order_address",
-    "modify_pending_order_payment",
-    "modify_user_address",
-}
-_WRITE_NUDGE = (
-    "\nUser lookup is done. After get_user_details / get_order_details / "
-    "get_product_details, call the write tool now (exchange, return, "
-    "modify, or cancel). The customer already confirmed. Do not stop. "
-    "Do not call find_user_id_* again."
-)
-
-
-def _tool_transcript(recorder: list[ToolCall], *, limit: int = 10) -> str:
-    """Replay already-returned tools so a fresh Agent does not re-lookup."""
-    bits: list[str] = []
-    for tc in recorder[-limit:]:
-        args = tc.arguments if isinstance(getattr(tc, "arguments", None), dict) else {}
-        try:
-            arg_s = json.dumps(args, ensure_ascii=False)[:240]
-        except Exception:  # noqa: BLE001
-            arg_s = str(args)[:240]
-        res = "" if tc.result is None else str(tc.result)
-        if len(res) > 400:
-            res = res[:400] + "…"
-        bits.append(f"- {tc.name}({arg_s}) -> {res}")
-    return "\n".join(bits)
-
-
-def _schema_tool_name(schema: Any) -> str:
-    if not isinstance(schema, dict):
-        return str(getattr(schema, "name", "") or "")
-    return str(
-        schema.get("name")
-        or (schema.get("function") or {}).get("name")
-        or ""
-    )
 
 
 @dataclass(eq=False)
@@ -160,20 +97,7 @@ class AgnoAgent(AgentRunner):
         recorder: list[ToolCall] = []
         try:
             from agno.agent import Agent
-            from agno.models.openai.chat import OpenAIChat
             from agno.models.openai.like import OpenAILike
-            from ageneval.task.core.openai_compat import install_openai_compat, sanitize_messages
-
-            install_openai_compat()
-            if not getattr(OpenAIChat._format_all_messages, "_a2e_compat", False):
-                _orig_fmt = OpenAIChat._format_all_messages
-
-                def _fmt(self, messages, compress_tool_results=False):  # noqa: ANN001
-                    rows = _orig_fmt(self, messages, compress_tool_results)
-                    return sanitize_messages(rows)
-
-                _fmt._a2e_compat = True  # type: ignore[attr-defined]
-                OpenAIChat._format_all_messages = _fmt  # type: ignore[method-assign]
 
             api_key = self.api_key or os.environ.get("OPENAI_API_KEY")
             api_base = self.api_base or os.environ.get("OPENAI_API_BASE")
@@ -195,76 +119,13 @@ class AgnoAgent(AgentRunner):
                 base_url=api_base,
                 timeout=self.request_timeout,
                 max_retries=self.max_retries,
-                max_tokens=_MAX_TOKENS,
             )
             tools = _build_function_tools(self.binding, task, recorder)
-            write_schema = any(
-                _schema_tool_name(s) in _RETAIL_WRITE
-                for s in (self.binding.tool_schemas or ())
-            )
-            need_write = write_schema and (
-                os.environ.get("A2E_TAU_NEED_WRITE") == "1"
-                or "already confirm" in (task.instruction or "").lower()
-            )
-            if need_write:
-                from ageneval.task.core.native_tools import (
-                    compose_final_answer,
-                    ensure_required_tools,
-                    force_retail_write_calls,
-                    is_unusable_final,
-                )
-
-                final = await force_retail_write_calls(
-                    binding=self.binding,
-                    task=task,
-                    recorder=recorder,
-                    model=self.model,
-                    api_key=api_key,
-                    api_base=api_base,
-                    max_turns=self.max_turns,
-                    deadline=self.run_deadline - (time.perf_counter() - start),
-                )
-                ensure_required_tools(binding=self.binding, task=task, recorder=recorder)
-                if is_unusable_final(final):
-                    final = compose_final_answer(task.instruction, recorder, existing=final)
-                return TaskTrace(
-                    task_id=task.task_id,
-                    agent_name=self.name,
-                    status="ok" if final else "error",
-                    turns=len(recorder),
-                    tool_calls=tuple(recorder),
-                    final_answer=final or None,
-                    elapsed_seconds=time.perf_counter() - start,
-                )
-            if os.environ.get("A2E_DSQA_FORCE") == "1":
-                from ageneval.task.core.native_tools import maybe_force_dsqa_search_trace
-
-                forced_ds = await maybe_force_dsqa_search_trace(
-                    binding=self.binding,
-                    task=task,
-                    recorder=recorder,
-                    model=self.model,
-                    api_key=api_key,
-                    api_base=api_base,
-                    max_turns=self.max_turns,
-                    deadline=self.run_deadline - (time.perf_counter() - start),
-                    agent_name=self.name,
-                    start=start,
-                )
-                if forced_ds is not None:
-                    return forced_ds
-            # Tool-less bindings (GDPval) must not get the native-tool hint —
-            # it steers glm into a JSON-wrapped "I'll start..." plan.
-            act_hint = _NATIVE_TOOL_HINT if tools else _DELIVERABLE_HINT
-            # Dataset overrides set max_turns (DeepSearchQA=8). Other harnesses
-            # pass that budget into the SDK; without tool_call_limit agno loops
-            # until A2E_AGNO_DEADLINE and returns an empty final_answer.
             agent = Agent(
                 name="a2e_agent",
                 model=model,
                 tools=tools,
-                instructions=self.binding.render_system_prompt() + act_hint,
-                tool_call_limit=self.max_turns,
+                instructions=self.binding.render_system_prompt() + _NATIVE_TOOL_HINT,
             )
 
             # agno's ``Agent.run`` is synchronous; run it off the event loop so
@@ -275,77 +136,11 @@ class AgnoAgent(AgentRunner):
             # so we return a partial trajectory rather than losing it — the outer
             # SandboxScoringRunner still extracts the diff + score while the
             # container is alive, and tears the container down (killing the thread).
-            async def _run_once(prompt: str):
-                return await asyncio.wait_for(
-                    asyncio.to_thread(agent.run, prompt),
-                    timeout=max(30.0, self.run_deadline - (time.perf_counter() - start)),
-                )
-
             try:
-                result = await _run_once(task.instruction)
-                need_web = any(
-                    (schema.get("function") or {}).get("name") == "web_search"
-                    for schema in (self.binding.tool_schemas or ())
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(agent.run, task.instruction),
+                    timeout=self.run_deadline,
                 )
-                missing_required = (tools and not recorder) or (
-                    need_web and "web_search" not in {tc.name for tc in recorder}
-                )
-                lookup = {"find_user_id_by_name_zip", "find_user_id_by_email"}
-                names = [tc.name for tc in recorder]
-                lookup_loop = bool(names) and all(n in lookup for n in names) and len(names) >= 3
-                if missing_required or lookup_loop:
-                    extra = ""
-                    if need_web and "web_search" not in set(names):
-                        extra = "\nYou MUST call web_search now before answering."
-                    elif lookup_loop:
-                        extra = (
-                            "\nUser lookup is done. Call get_user_details then "
-                            "get_order_details. Do not call find_user_id_* again."
-                        )
-                    retry_agent = Agent(
-                        name="a2e_agent",
-                        model=model,
-                        tools=tools,
-                        instructions=self.binding.render_system_prompt()
-                        + _NATIVE_TOOL_HINT
-                        + _FORCE_TOOL_HINT
-                        + extra,
-                        tool_call_limit=self.max_turns,
-                    )
-                    result = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            retry_agent.run,
-                            task.instruction + _FORCE_TOOL_HINT + extra,
-                        ),
-                        timeout=max(30.0, self.run_deadline - (time.perf_counter() - start)),
-                    )
-                write_schema = any(
-                    _schema_tool_name(s) in _RETAIL_WRITE
-                    for s in (self.binding.tool_schemas or ())
-                )
-                need_write = write_schema and (
-                    os.environ.get("A2E_TAU_NEED_WRITE") == "1"
-                    or "already confirm" in (task.instruction or "").lower()
-                )
-                if (
-                    need_write
-                    and not any(tc.name in _RETAIL_WRITE for tc in recorder)
-                    and (self.run_deadline - (time.perf_counter() - start)) > 20
-                ):
-                    from ageneval.task.core.native_tools import force_retail_write_calls
-
-                    forced = await force_retail_write_calls(
-                        binding=self.binding,
-                        task=task,
-                        recorder=recorder,
-                        model=self.model,
-                        api_key=api_key,
-                        api_base=api_base,
-                        max_turns=min(16, self.max_turns),
-                        deadline=self.run_deadline - (time.perf_counter() - start),
-                    )
-                    if forced:
-                        result = type("R", (), {"content": forced})()
             except asyncio.TimeoutError:
                 partial = tuple(recorder)
                 return TaskTrace(
@@ -361,34 +156,25 @@ class AgnoAgent(AgentRunner):
                         f"after {len(partial)} tool call(s)"
                     ),
                 )
-            except Exception as stop_exc:
-                from agno.exceptions import StopAgentRun
-
-                if not isinstance(stop_exc, StopAgentRun):
-                    raise
-                result = None
 
             run_error = _run_error(result)
-            err_l = (run_error or "").lower()
-            if run_error and ("503" in err_l or "no available accounts" in err_l):
-                remain = self.run_deadline - (time.perf_counter() - start)
-                if remain > 40:
-                    await asyncio.sleep(8)
-                    try:
-                        result = await _run_once(task.instruction)
-                        run_error = _run_error(result)
-                    except Exception:  # noqa: BLE001
-                        pass
-            final = _extract_final(result)
-            from ageneval.task.core.native_tools import (
-                compose_final_answer,
-                ensure_required_tools,
-                is_unusable_final,
-            )
+            if run_error is not None:
+                return TaskTrace(
+                    task_id=task.task_id,
+                    agent_name=self.name,
+                    status="error",
+                    turns=_count_turns(result) or len(recorder),
+                    tool_calls=tuple(recorder),
+                    elapsed_seconds=time.perf_counter() - start,
+                    error=run_error[:1000],
+                )
 
-            ensure_required_tools(binding=self.binding, task=task, recorder=recorder)
-            if is_unusable_final(final) or run_error is not None:
-                final = compose_final_answer(task.instruction, recorder, existing=final)
+            final = ""
+            content = getattr(result, "content", None)
+            if content is not None:
+                final = str(content).strip()
+            elif result is not None:
+                final = str(result).strip()
 
             turns = _count_turns(result) or len(recorder)
             return TaskTrace(
@@ -399,84 +185,19 @@ class AgnoAgent(AgentRunner):
                 tool_calls=tuple(recorder),
                 final_answer=final or None,
                 elapsed_seconds=time.perf_counter() - start,
-                error=None if final else (run_error or "empty final")[:1000],
             )
         except Exception as exc:
             # Broad catch: surface any SDK / network / parsing failure as an
             # error TaskTrace rather than crashing the whole experiment run.
-            from ageneval.task.core.native_tools import (
-                compose_final_answer,
-                ensure_required_tools,
-            )
-
-            ensure_required_tools(binding=self.binding, task=task, recorder=recorder)
-            final = compose_final_answer(task.instruction, recorder)
             return TaskTrace(
                 task_id=task.task_id,
                 agent_name=self.name,
-                status="ok" if final else "error",
-                turns=len(recorder),
+                status="error",
+                turns=0,
                 tool_calls=tuple(recorder),
-                final_answer=final or None,
                 elapsed_seconds=time.perf_counter() - start,
-                error=None if final else (str(exc) or type(exc).__name__)[:1000],
+                error=(str(exc) or type(exc).__name__)[:1000],
             )
-
-
-def _extract_text(obj: Any) -> str:
-    """Visible content, or kimi-k3 reasoning if content is empty."""
-    if obj is None:
-        return ""
-    content = getattr(obj, "content", None)
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict):
-                text = block.get("text") or block.get("thinking") or block.get("reasoning_content")
-                if text:
-                    parts.append(str(text))
-            else:
-                text = getattr(block, "text", None) or getattr(block, "content", None)
-                if text:
-                    parts.append(str(text))
-        joined = "".join(parts).strip()
-        if joined:
-            return joined
-    elif content is not None and str(content).strip():
-        text = str(content).strip()
-        low = text.lower()
-        if "no available accounts" not in low and "error code: 503" not in low:
-            return text
-    for key in ("reasoning_content", "reasoning", "thinking"):
-        extra = getattr(obj, key, None)
-        if extra and str(extra).strip():
-            return str(extra).strip()
-    extra = getattr(obj, "additional_kwargs", None) or {}
-    if isinstance(extra, dict):
-        for key in ("reasoning_content", "reasoning", "thinking"):
-            text = extra.get(key)
-            if text:
-                return str(text).strip()
-    dump = obj.model_dump() if hasattr(obj, "model_dump") else {}
-    if isinstance(dump, dict):
-        for key in ("reasoning_content", "reasoning", "thinking"):
-            text = dump.get(key) or (dump.get("model_extra") or {}).get(key)
-            if text:
-                return str(text).strip()
-    return ""
-
-
-def _extract_final(result: Any) -> str:
-    text = _extract_text(result)
-    if text:
-        return text
-    for msg in reversed(list(getattr(result, "messages", None) or ())):
-        text = _extract_text(msg)
-        if text:
-            return text
-    return ""
 
 
 def _count_turns(result: Any) -> int:
@@ -531,27 +252,31 @@ def _build_function_tools(
 
         def _make(tool_name: str):
             def _tool(**kwargs: Any) -> str:
-                from ageneval.task.core.native_tools import (
-                    invoke_binding_tool,
-                    is_stop_tool_result,
-                )
-
-                text = invoke_binding_tool(
-                    tool_name=tool_name,
-                    kwargs=kwargs,
-                    binding=binding,
-                    task=task,
-                    recorder=recorder,
-                )
-                if is_stop_tool_result(text):
-                    # Duplicate/budget STOP must not abort before a retail write.
-                    # StopAgentRun here used to skip the write-nudge loop entirely.
-                    wrote = any(tc.name in _RETAIL_WRITE for tc in recorder)
-                    if wrote:
-                        from agno.exceptions import StopAgentRun
-
-                        raise StopAgentRun(text)
-                return text
+                # agno calls us as ``_tool(**model_arguments)``: the model's
+                # tool-call arguments land directly as keyword args. Defensive
+                # unwrap — a few models still nest everything under a single
+                # wrapper key; recover the real arguments in that case.
+                args = dict(kwargs)
+                if len(args) == 1:
+                    only_key, only_val = next(iter(args.items()))
+                    if only_key in ("kwargs", "arguments", "args") and isinstance(only_val, dict):
+                        args = dict(only_val)
+                    elif only_key == "arguments_json" and isinstance(only_val, str):
+                        try:
+                            parsed = json.loads(only_val or "{}")
+                        except (ValueError, TypeError):
+                            parsed = None
+                        if isinstance(parsed, dict):
+                            args = parsed
+                try:
+                    result = binding.tool_executor(tool_name, args, task.initial_state)
+                except Exception as exc:
+                    recorder.append(
+                        ToolCall(name=tool_name, arguments=args, result=None, error=str(exc))
+                    )
+                    return json.dumps({"error": str(exc)}, default=str)
+                recorder.append(ToolCall(name=tool_name, arguments=args, result=result))
+                return json.dumps(result, default=str)
 
             return _tool
 

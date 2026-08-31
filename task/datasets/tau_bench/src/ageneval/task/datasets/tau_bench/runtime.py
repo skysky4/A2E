@@ -18,12 +18,44 @@ Domain = Literal["retail", "airline"]
 _DB_KEY = "__tau_db__"
 _DOMAIN_KEY = "__tau_domain__"
 
+_CACHE_KEY = "__a2e_tool_cache__"
+
+# Official wiki: transfer only when the request is outside tool scope.
+# A spoken "I will exchange it" is not a completed action.
 _NATIVE_TOOL_SUFFIX = (
     "\n\nYou have the tools listed in the function-calling interface. "
     "Call a tool by invoking the function with its named arguments. "
     "Do not emit a JSON action object as plain text. "
     "Identify the user first (email or name+zip) before changing any records. "
-    "When the request is complete, reply to the customer in plain language."
+    "After the customer explicitly confirms, you must call the matching write "
+    "tool (exchange_delivered_order_items, return_delivered_order_items, "
+    "cancel_pending_order, or the modify_* / reservation update tools). "
+    "Text confirmation is not a completed action. "
+    "Do not call transfer_to_human_agents when those tools can fulfill the request. "
+    "payment_method_id must be the lookup id (credit_card_… / gift_card_…), "
+    "not the last four digits. order_id keeps its leading '#'. "
+    "item_ids must be the current items on the order; new_item_ids must be "
+    "available variants of the same product (available: true). "
+    "Do not repeat a tool with the same arguments; reuse prior results. "
+    "When a write tool has succeeded, reply to the customer in plain language."
+)
+
+WRITE_TOOLS = frozenset(
+    {
+        "exchange_delivered_order_items",
+        "return_delivered_order_items",
+        "cancel_pending_order",
+        "modify_pending_order_items",
+        "modify_pending_order_address",
+        "modify_pending_order_payment",
+        "modify_user_address",
+        "book_reservation",
+        "cancel_reservation",
+        "update_reservation_flights",
+        "update_reservation_baggages",
+        "update_reservation_passengers",
+        "send_certificate",
+    }
 )
 
 
@@ -88,18 +120,55 @@ def ensure_db(state: Mapping[str, Any], domain: Domain) -> dict[str, Any]:
     return deepcopy(load_domain_data(domain))
 
 
+def _call_key(name: str, arguments: Mapping[str, Any]) -> str:
+    return json.dumps({"name": name, "args": dict(arguments or {})}, sort_keys=True, default=str)
+
+
+def _is_tool_error(result: Any) -> bool:
+    if isinstance(result, Mapping) and result.get("error"):
+        return True
+    if isinstance(result, str) and result.lower().startswith("error"):
+        return True
+    return False
+
+
 def execute_tool(
     name: str,
     arguments: Mapping[str, Any],
     state: Mapping[str, Any],
     domain: Domain = "retail",
 ) -> Any:
-    """Dispatch ``name`` against the official Sierra tool implementation."""
+    """Dispatch ``name`` against the official Sierra tool implementation.
+
+    Successful ``(name, args)`` pairs are cached on the shared task state so a
+    fresh harness ``run()`` (official user-sim turn) does not replay lookups
+    or a one-shot write.
+    """
     tools = _tool_map(domain)
     if name not in tools:
         return {"error": f"unknown tool '{name}'", "available": sorted(tools)}
-    db = ensure_db(state, domain)
     args = dict(arguments or {})
+    cache: list[Any] | None = None
+    if isinstance(state, dict):
+        raw = state.get(_CACHE_KEY)
+        if not isinstance(raw, list):
+            raw = []
+            state[_CACHE_KEY] = raw
+        cache = raw
+        key = _call_key(name, args)
+        for item in cache:
+            if not isinstance(item, Mapping):
+                continue
+            if item.get("key") == key:
+                return item.get("result")
+            if (
+                name in {"find_user_id_by_name_zip", "find_user_id_by_email"}
+                and item.get("name") == name
+                and item.get("ok")
+            ):
+                return item.get("result")
+
+    db = ensure_db(state, domain)
     try:
         result = tools[name].invoke(data=db, **args)
     except TypeError as exc:
@@ -110,8 +179,18 @@ def execute_tool(
         text = result.strip()
         if text.startswith("{") or text.startswith("["):
             try:
-                return json.loads(text)
+                result = json.loads(text)
             except (ValueError, TypeError):
-                return text
-        return text
+                result = text
+        else:
+            result = text
+    if cache is not None and not _is_tool_error(result):
+        cache.append(
+            {
+                "key": _call_key(name, args),
+                "name": name,
+                "result": result,
+                "ok": True,
+            }
+        )
     return result

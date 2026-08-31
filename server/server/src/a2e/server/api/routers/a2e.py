@@ -712,7 +712,7 @@ def _run_experiment_worker(job_id: str, payload: Dict[str, Any]) -> None:
 
         # Build evaluators
         judge_llm = None
-        if "llm_judge" in payload["evaluators"]:
+        if any(name in ("llm_judge", "gdp_grader") for name in payload["evaluators"]):
             try:
                 from a2e.evals.llm import LLM  # type: ignore
 
@@ -733,9 +733,14 @@ def _run_experiment_worker(job_id: str, payload: Dict[str, Any]) -> None:
 
         evaluators: list = []
         for name in payload["evaluators"]:
-            if name == "llm_judge":
+            if name in ("llm_judge", "gdp_grader"):
                 if judge_llm is not None:
-                    evaluators.append(make_llm_judge(judge_llm))
+                    if name == "gdp_grader":
+                        from ageneval.task.datasets.gdpval.grader import make_gdp_grader
+
+                        evaluators.append(make_gdp_grader(judge_llm))
+                    else:
+                        evaluators.append(make_llm_judge(judge_llm))
             elif name in EVALUATORS:
                 evaluators.append(EVALUATORS[name])
 

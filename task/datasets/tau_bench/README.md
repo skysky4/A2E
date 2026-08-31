@@ -9,6 +9,11 @@ Provides:
 
 ## Sources
 
+Official outcome metric is ``tau_grader`` (alias ``tau_reward``): Sierra
+``calculate_reward`` (pass^1) — final DB hash vs gold-action replay, plus
+required NL outputs. Implementation:
+``src/ageneval/task/datasets/tau_bench/grader.py``.
+
 If the optional dependency ``tau-bench`` (upstream sierra-research package)
 is installed, this adapter uses its scenarios. Otherwise it falls back to a
 **small vendored sample set** so smoke tests work offline.

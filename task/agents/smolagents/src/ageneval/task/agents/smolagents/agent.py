@@ -21,26 +21,12 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, ToolCall
-from ageneval.task.core.budget import llm_timeout as _llm_timeout
-from ageneval.task.core.budget import max_retries as _max_retries
-from ageneval.task.core.budget import max_steps as _default_steps
-from ageneval.task.core.budget import max_tokens as _max_tokens
-from ageneval.task.core.budget import remaining_deadline as _remaining_deadline
 
 from ageneval.task.agents.smolagents.prompts import build_additional_instructions
 
 logger = logging.getLogger(__name__)
 
-
-class _StopTools(BaseException):
-    """Raised from a tool when the shared web/duplicate budget is spent.
-
-    BaseException so smolagents cannot swallow it as a normal tool error
-    and keep looping.
-    """
-
-
-_MAX_STEPS = _default_steps()
+_MAX_STEPS = 8
 # Unified model: default to .env's A2E_MODEL (a non-reasoning instruct model);
 # fall back to qwen-plus. Never default to a model the endpoint does not serve.
 _DEFAULT_MODEL = os.environ.get("A2E_MODEL") or "qwen-plus"
@@ -113,37 +99,23 @@ def _make_smolagents_tool(
         inputs: dict[str, dict[str, str]] = {}
         output_type = "string"
 
-        def forward(self, *args: Any, **kwargs: Any) -> str:
-            from ageneval.task.core.native_tools import (
-                execute_recorded_tool,
-                is_stop_tool_result,
-                unwrap_tool_kwargs,
+        def forward(self, **kwargs: Any) -> str:
+            try:
+                result = executor(self.name, kwargs, initial_state)
+            except Exception as exc:  # noqa: BLE001
+                recorder.append(
+                    ToolCall(name=self.name, arguments=dict(kwargs), result=None, error=str(exc))
+                )
+                return json.dumps({"error": str(exc)}, default=str)
+            recorder.append(
+                ToolCall(name=self.name, arguments=dict(kwargs), result=result)
             )
-
-            merged = dict(kwargs)
-            for arg in args:
-                if isinstance(arg, dict):
-                    merged.update(arg)
-                    continue
-                text = str(arg or "").strip()
-                if text.startswith("{}{"):
-                    text = text[2:]
-                try:
-                    parsed = json.loads(text)
-                except (TypeError, ValueError):
-                    parsed = None
-                if isinstance(parsed, dict):
-                    merged.update(parsed)
-            text = execute_recorded_tool(
-                tool_name=self.name,
-                kwargs=unwrap_tool_kwargs(merged),
-                executor=executor,
-                initial_state=initial_state,
-                recorder=recorder,
-            )
-            if is_stop_tool_result(text):
-                raise _StopTools(text)
-            return text
+            if isinstance(result, str):
+                return result
+            try:
+                return json.dumps(result, default=str)
+            except Exception:  # noqa: BLE001
+                return str(result)
 
     _BoundTool.__name__ = f"Tool_{name}"
     _BoundTool.name = name
@@ -188,64 +160,7 @@ class SmolAgentsAgent(AgentRunner):
     async def run(self, task: TaskInput) -> TaskTrace:
         # Blocking smolagents.run() executed in a thread so we keep the
         # async contract of AgentRunner.
-        start = time.perf_counter()
-        if self.binding is not None and os.environ.get("A2E_TAU_NEED_WRITE") == "1":
-            from ageneval.task.core.native_tools import maybe_force_retail_write_trace
-
-            forced = await maybe_force_retail_write_trace(
-                binding=self.binding,
-                task=task,
-                recorder=[],
-                model=self.model,
-                api_key=self.api_key or os.environ.get("OPENAI_API_KEY") or "",
-                api_base=self.api_base or os.environ.get("OPENAI_API_BASE"),
-                max_turns=self.max_steps if hasattr(self, "max_steps") else self.max_turns,
-                deadline=_remaining_deadline(start),
-                agent_name=self.name,
-                start=start,
-            )
-            if forced is not None:
-                return forced
-        if self.binding is not None and os.environ.get("A2E_DSQA_FORCE") == "1":
-            from ageneval.task.core.native_tools import maybe_force_dsqa_search_trace
-
-            forced_ds = await maybe_force_dsqa_search_trace(
-                binding=self.binding,
-                task=task,
-                recorder=[],
-                model=self.model,
-                api_key=self.api_key or os.environ.get("OPENAI_API_KEY") or "",
-                api_base=self.api_base or os.environ.get("OPENAI_API_BASE"),
-                max_turns=self.max_steps,
-                deadline=_remaining_deadline(start),
-                agent_name=self.name,
-                start=start,
-            )
-            if forced_ds is not None:
-                return forced_ds
-        try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(self._run_sync, task),
-                timeout=_remaining_deadline(start),
-            )
-        except asyncio.TimeoutError:
-            rec = list(getattr(self, "_recorder", []) or [])
-            from ageneval.task.core.native_tools import compose_final_answer
-
-            final = compose_final_answer(
-                getattr(self, "_task_instruction", task.instruction), rec
-            )
-            return TaskTrace(
-                task_id=task.task_id,
-                agent_name=self.name,
-                status="ok" if final else "timeout",
-                turns=len(rec),
-                tool_calls=tuple(rec),
-                final_answer=final or None,
-                elapsed_seconds=time.perf_counter() - start,
-                error=None if final else f"agent exceeded {_remaining_deadline(start):.0f}s deadline",
-                raw=dict(getattr(self, "_prompt_meta", {}) or {}),
-            )
+        return await asyncio.to_thread(self._run_sync, task)
 
     def _run_sync(self, task: TaskInput) -> TaskTrace:
         start = time.perf_counter()
@@ -297,77 +212,19 @@ class SmolAgentsAgent(AgentRunner):
             # which forces a tool call each step. Non-reasoning instruct models
             # (e.g. qwen-plus) support this natively. Reasoning models reject
             # tool_choice — for those, switch the unified model in .env to a
-            # non-reasoning instruct model.
-            # timeout / max_retries belong on the OpenAI client, not on
-            # Completions.create() — extra kwargs are forwarded to create().
-            model_kwargs: dict[str, Any] = {
-                "model_id": self.model,
-                "api_base": api_base,
-                "api_key": api_key,
-                "max_tokens": _max_tokens(),
-                "client_kwargs": {
-                    "timeout": _llm_timeout(),
-                    "max_retries": _max_retries(),
-                },
-            }
-            try:
-                model = OpenAIServerModel(**model_kwargs)
-            except TypeError:
-                model_kwargs.pop("client_kwargs", None)
-                model = OpenAIServerModel(**model_kwargs)
-            additional = build_additional_instructions(self.binding.render_system_prompt())
-            if not additional.strip():
-                additional = (
-                    "Follow the user task. When you have the answer, call final_answer. "
-                    "Do not leave the final answer empty."
-                )
+            # non-reasoning instruct model (see test/mingxuan/README.md).
+            model = OpenAIServerModel(
+                model_id=self.model,
+                api_base=api_base,
+                api_key=api_key,
+            )
             agent = ToolCallingAgent(
                 tools=tools,
                 model=model,
                 max_steps=self.max_steps,
-                instructions=additional,
             )
-            # Always pin the binding policy at the top. The stock Jinja
-            # template only emits ``custom_instructions`` inside
-            # ``{% if custom_instructions %}``; a blank/None instructions
-            # used to wipe the dataset system prompt.
-            template = agent.prompt_templates.get("system_prompt") or ""
-            pin = (
-                "## Dataset policy (required)\n"
-                + additional.strip()
-                + "\n\n"
-            )
-            if pin not in template:
-                agent.prompt_templates["system_prompt"] = pin + template
-            rendered = (agent.system_prompt or "").strip()
-            if not rendered or additional[:40] not in rendered:
-                agent.prompt_templates["system_prompt"] = pin + (template or "You are a helpful agent.")
-                rendered = (agent.system_prompt or "").strip()
-            if not rendered:
-                raise RuntimeError("smolagents system prompt is empty after binding inject")
-            self._recorder = recorder
-            self._task_instruction = task.instruction
-            self._prompt_meta = {
-                "additional_instructions": additional,
-                "system_prompt_chars": len(rendered),
-                "system_prompt_preview": rendered[:500],
-            }
+            additional = build_additional_instructions(self.binding.render_system_prompt())
             result = agent.run(task.instruction, additional_args=None)
-        except _StopTools:
-            from ageneval.task.core.native_tools import compose_final_answer, ensure_required_tools
-
-            ensure_required_tools(binding=self.binding, task=task, recorder=recorder)
-            final = compose_final_answer(task.instruction, recorder)
-            return TaskTrace(
-                task_id=task.task_id,
-                agent_name=self.name,
-                status="ok" if final else "error",
-                turns=_count_steps(locals().get("agent")),
-                tool_calls=tuple(recorder),
-                final_answer=final or None,
-                elapsed_seconds=time.perf_counter() - start,
-                raw=dict(getattr(self, "_prompt_meta", {}) or {}),
-            )
         except Exception as exc:  # noqa: BLE001
             msg = str(exc) or type(exc).__name__
             lower = msg.lower()
@@ -377,36 +234,17 @@ class SmolAgentsAgent(AgentRunner):
             elif "connection" in lower or "timeout" in lower:
                 hint = " — network error reaching the OpenAI-compatible endpoint."
             elapsed = time.perf_counter() - start
-            from ageneval.task.core.native_tools import compose_final_answer
-
-            final = compose_final_answer(task.instruction, recorder)
             return TaskTrace(
                 task_id=task.task_id,
                 agent_name=self.name,
-                status="ok" if final else "error",
+                status="error",
                 turns=_count_steps(locals().get("agent")),
                 tool_calls=tuple(recorder),
-                final_answer=final or None,
                 elapsed_seconds=elapsed,
-                error=None if final else (msg + hint)[:1000],
-                raw=dict(getattr(self, "_prompt_meta", {}) or {}),
+                error=(msg + hint)[:1000],
             )
 
         final_answer = _stringify(result)
-        from ageneval.task.core.native_tools import compose_final_answer, ensure_required_tools
-
-        ensure_required_tools(binding=self.binding, task=task, recorder=recorder)
-
-        try:
-            from ageneval.task.core.native_tools import is_unusable_final
-        except ImportError:  # stale/partial native_tools during live edits
-            def is_unusable_final(text: str) -> bool:
-                return not (text or "").strip()
-
-        if is_unusable_final(final_answer or ""):
-            final_answer = compose_final_answer(
-                task.instruction, recorder, existing=final_answer or ""
-            )
         turns = _count_steps(agent)
         elapsed = time.perf_counter() - start
         status = "ok" if final_answer else ("max_turns" if turns >= self.max_steps else "error")
@@ -419,10 +257,7 @@ class SmolAgentsAgent(AgentRunner):
             tool_calls=tuple(recorder),
             final_answer=final_answer,
             elapsed_seconds=elapsed,
-            raw=dict(getattr(self, "_prompt_meta", {}) or {
-                "additional_instructions": additional,
-                "system_prompt_chars": len((agent.system_prompt or "").strip()),
-            }),
+            raw={"additional_instructions": additional} if additional else {},
         )
 
 

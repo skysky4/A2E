@@ -266,28 +266,35 @@ def _qa_bind(bench: str) -> Callable:
     return _f
 
 
-# Default (recommended) evaluators per dataset. The UI pre-selects these when a
+# Official τ family cell: Sierra calculate_reward, 30 turns (wiki budget).
+_TAU_OFFICIAL: Dict[str, Any] = {
+    "default_evaluators": ["tau_grader"],
+    "agent_overrides": {"max_turns": 30, "max_steps": 30},
+    "official_settings": {
+        "max_turns": 30,
+        "max_tokens": 4096,
+        "llm_timeout": 180.0,
+        "run_deadline": 1100.0,
+        "wall": 1200,
+        "grader": "tau_grader",
+    },
+}
+
+# Default (recommended) graders per dataset. The UI pre-selects these when a
 # dataset is chosen; the user can still add/remove any evaluator. Rationale:
+#   - τ family        → official Sierra grader (tau_grader)
+#   - DeepSearchQA    → official Appendix A grader (deepsearch_grader)
+#   - GDPval-AA       → in-run rubric grader (gdp_grader); pairwise Elo is off-run
 #   - tool datasets   → trajectory correctness (tool_recall) + answer quality (llm_judge)
 #   - multiple-choice → letter match (mc_letter) + llm_judge
 #   - numeric (math)  → numeric_match + llm_judge
 #   - free-form / code→ substring or exact_match + llm_judge
 DATASETS: Dict[str, Dict[str, Any]] = {
-    "tau-bench": {"load": _load_tau_bench, "bind": _bind_tau_bench, "kind": "tool",
-                  "default_evaluators": ["tool_recall", "llm_judge"],
-                  "agent_overrides": {"max_turns": 30, "max_steps": 30}},
-    "tau2":      {"load": _load_tau2, "bind": _bind_tau2, "kind": "tool",
-                  "default_evaluators": ["tool_recall", "llm_judge"],
-                  "agent_overrides": {"max_turns": 30, "max_steps": 30}},
-    "tau3":      {"load": _load_tau3, "bind": _bind_tau3, "kind": "tool",
-                  "default_evaluators": ["tool_recall", "llm_judge"],
-                  "agent_overrides": {"max_turns": 30, "max_steps": 30}},
-    "tau3bench": {"load": _load_tau3, "bind": _bind_tau3, "kind": "tool",
-                  "default_evaluators": ["tool_recall", "llm_judge"],
-                  "agent_overrides": {"max_turns": 30, "max_steps": 30}},
-    "tau3-bench": {"load": _load_tau3, "bind": _bind_tau3, "kind": "tool",
-                   "default_evaluators": ["tool_recall", "llm_judge"],
-                   "agent_overrides": {"max_turns": 30, "max_steps": 30}},
+    "tau-bench": {"load": _load_tau_bench, "bind": _bind_tau_bench, "kind": "tool", **_TAU_OFFICIAL},
+    "tau2":      {"load": _load_tau2, "bind": _bind_tau2, "kind": "tool", **_TAU_OFFICIAL},
+    "tau3":      {"load": _load_tau3, "bind": _bind_tau3, "kind": "tool", **_TAU_OFFICIAL},
+    "tau3bench": {"load": _load_tau3, "bind": _bind_tau3, "kind": "tool", **_TAU_OFFICIAL},
+    "tau3-bench": {"load": _load_tau3, "bind": _bind_tau3, "kind": "tool", **_TAU_OFFICIAL},
     "mmlu":      {"load": _load_mmlu, "bind": _bind_mmlu, "kind": "qa",
                   "default_evaluators": ["mc_letter", "llm_judge"],
                   "agent_overrides": {"max_turns": 8, "max_steps": 8}},
@@ -304,11 +311,27 @@ DATASETS: Dict[str, Dict[str, Any]] = {
                       "default_evaluators": ["tool_recall", "llm_judge"],
                       "agent_overrides": {"max_turns": 8, "max_steps": 8}},
     "gdpval-aa": {"load": _load_gdpval, "bind": _bind_gdpval, "kind": "qa",
-                  "default_evaluators": ["llm_judge"],
-                  "agent_overrides": {"max_turns": 8, "max_steps": 8}},
+                  "default_evaluators": ["gdp_grader"],
+                  "agent_overrides": {"max_turns": 8, "max_steps": 8},
+                  "official_settings": {
+                      "max_turns": 8,
+                      "max_tokens": 16384,
+                      "llm_timeout": 600.0,
+                      "run_deadline": 1700.0,
+                      "wall": 1800,
+                      "grader": "gdp_grader",
+                  }},
     "deepsearchqa": {"load": _load_deepsearchqa, "bind": _bind_deepsearchqa, "kind": "tool",
-                     "default_evaluators": ["deepsearch_match", "tool_recall"],
-                     "agent_overrides": {"max_turns": 8, "max_steps": 8}},
+                     "default_evaluators": ["deepsearch_grader"],
+                     "agent_overrides": {"max_turns": 8, "max_steps": 8},
+                     "official_settings": {
+                         "max_turns": 8,
+                         "max_tokens": 4096,
+                         "llm_timeout": 180.0,
+                         "run_deadline": 620.0,
+                         "wall": 720,
+                         "grader": "deepsearch_grader",
+                     }},
 }
 
 # qa_suite — 10 config-driven pure-QA benchmarks (no sandbox/tools).
@@ -545,6 +568,18 @@ def _eval_tool_recall(output: dict, expected: dict) -> float:
     return len(called & expected_names) / len(expected_names)
 
 
+def _eval_tau_grader(output: dict, expected: dict, input: dict | None = None) -> float:
+    """Sierra official calculate_reward pass^1 (DB hash + required outputs)."""
+    from ageneval.task.datasets.tau_bench.grader import tau_grader
+
+    return tau_grader(output=output, expected=expected, input=input or {})
+
+
+def _eval_tau_reward(output: dict, expected: dict, input: dict | None = None) -> float:
+    """Alias of ``tau_grader`` (kept so older ``--evaluators tau_reward`` still works)."""
+    return _eval_tau_grader(output, expected, input)
+
+
 _NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
 _FRAC_RE = re.compile(r"\\d?frac\s*\{\s*(-?\d+)\s*\}\s*\{\s*(-?\d+)\s*\}")
 _SLASH_RE = re.compile(r"(-?\d+)\s*/\s*(-?\d+)")
@@ -589,38 +624,16 @@ def _eval_numeric_match(output: dict, expected: dict) -> float:
     return float(abs(pred - ref) < 1e-6)
 
 
-_SET_SPLIT_RE = re.compile(r"\s*(?:,|;|\band\b|\n)\s*", re.IGNORECASE)
+def _eval_deepsearch_grader(output: dict, expected: dict, input: dict) -> float:
+    """DeepSearchQA official Appendix A grader (containment / set recall)."""
+    from ageneval.task.datasets.deepsearchqa.grader import deepsearch_grader
 
-
-def _deepsearch_items(text: str) -> list[str]:
-    parts = [re.sub(r"\s+", " ", p).strip(" .;:") for p in _SET_SPLIT_RE.split(text or "")]
-    return [p.lower() for p in parts if p]
+    return deepsearch_grader(output=output, expected=expected, input=input)
 
 
 def _eval_deepsearch_match(output: dict, expected: dict, input: dict) -> float:
-    """DeepSearchQA outcome metric: single-answer containment or set-item recall.
-
-    Official autorater is gemini-2.5-flash. This deterministic stand-in scores
-    Single Answer as 1 iff the gold string appears in the reply, and Set Answer
-    as the fraction of gold items found in the reply.
-    """
-    answer = _final_answer(output)
-    gold = str(((expected or {}).get("expected_outputs") or [""])[0] or "")
-    if not answer or not gold:
-        return 0.0
-    state = (input or {}).get("initial_state") or {}
-    answer_type = str(state.get("answer_type") or "Single Answer")
-    if answer_type != "Set Answer":
-        g = gold.strip().lower()
-        a = answer.strip().lower()
-        return float(g == a or g in a)
-    golds = _deepsearch_items(gold)
-    if not golds:
-        return 0.0
-    blob = answer.lower()
-    pred = set(_deepsearch_items(answer))
-    hits = sum(1 for g in golds if g in pred or g in blob)
-    return hits / len(golds)
+    """Alias of ``deepsearch_grader``."""
+    return _eval_deepsearch_grader(output, expected, input)
 
 
 def _eval_humaneval_pass(output: dict, expected: dict, input: dict) -> float:
@@ -750,28 +763,38 @@ for _eval_fn, _eval_name in (
     (_eval_exact_match, "exact_match"),
     (_eval_substring, "substring"),
     (_eval_tool_recall, "tool_recall"),
+    (_eval_tau_grader, "tau_grader"),
+    (_eval_tau_reward, "tau_reward"),
     (_eval_numeric_match, "numeric_match"),
     (_eval_mc_letter, "mc_letter"),
     (_eval_humaneval_pass, "humaneval_pass"),
+    (_eval_deepsearch_grader, "deepsearch_grader"),
     (_eval_deepsearch_match, "deepsearch_match"),
 ):
     _eval_fn.__name__ = _eval_name
     _eval_fn.__qualname__ = _eval_name
 
 
+# Dynamic (LLM) graders — not in EVALUATORS because they need a constructed LLM.
+LLM_GRADERS = frozenset({"llm_judge", "gdp_grader"})
+
+
 EVALUATORS: Dict[str, Callable[..., Any]] = {
     "exact_match": _eval_exact_match,
     "substring": _eval_substring,
     "tool_recall": _eval_tool_recall,
+    "tau_grader": _eval_tau_grader,
+    "tau_reward": _eval_tau_reward,
     "numeric_match": _eval_numeric_match,
     "mc_letter": _eval_mc_letter,
     "humaneval_pass": _eval_humaneval_pass,
+    "deepsearch_grader": _eval_deepsearch_grader,
     "deepsearch_match": _eval_deepsearch_match,
     "swe_resolved": _eval_swe_resolved,
     "swe_fail_to_pass": _eval_swe_fail_to_pass,
     "swe_pass_to_pass": _eval_swe_pass_to_pass,
     "tb_resolved": _eval_tb_resolved,
-    # "llm_judge" is special: built dynamically when an LLM is provided.
+    # "llm_judge" / "gdp_grader" are special: built dynamically when an LLM is provided.
 }
 
 
@@ -785,7 +808,7 @@ def list_registries() -> Dict[str, Any]:
     return {
         "datasets": sorted(DATASETS),
         "agents": sorted(AGENTS),
-        "evaluators": sorted(EVALUATORS) + ["llm_judge"],
+        "evaluators": sorted(EVALUATORS) + sorted(LLM_GRADERS),
         "agent_meta": {
             name: {
                 "framework": meta.get("framework", "none"),
@@ -798,6 +821,7 @@ def list_registries() -> Dict[str, Any]:
             name: {
                 "kind": meta.get("kind", "qa"),
                 "default_evaluators": list(meta.get("default_evaluators", [])),
+                "official_settings": dict(meta.get("official_settings") or {}),
             }
             for name, meta in DATASETS.items()
         },

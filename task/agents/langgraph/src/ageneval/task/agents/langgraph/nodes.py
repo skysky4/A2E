@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Any
 
@@ -21,12 +20,6 @@ from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttribu
 from opentelemetry import trace as trace_api
 
 from ageneval.task.core import AgentBinding, TaskInput
-from ageneval.task.core.native_tools import (
-    bootstrap_lookup_call,
-    clip_for_model,
-    openai_tool_dicts,
-    unwrap_tool_kwargs,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -34,60 +27,12 @@ _AGENT_KIND_KEY = SpanAttributes.OPENINFERENCE_SPAN_KIND
 _AGENT_KIND_VAL = OpenInferenceSpanKindValues.AGENT.value
 _TOOL_KIND_VAL = OpenInferenceSpanKindValues.TOOL.value
 _JSON_RE = re.compile(r"\{(?:[^{}]|(?:\{[^{}]*\}))*\}", re.DOTALL)
-_PLAN_RE = re.compile(
-    r"^(i['’]ll|i will|let me|i need to|i am going to|i['’]m going to|"
-    r"we need|i'll start|i'll research|i'll verify|i'll look)",
-    re.I,
-)
-_WEB_TOOLS = frozenset({"web_search", "open_url"})
-_STUB_ANSWERS = frozenset({"(no answer)", "assistant:", "assistant", "", "none", "null"})
 
 _tracer = trace_api.get_tracer(__name__)
 
 
-def looks_like_plan(text: str) -> bool:
-    """True when the model narrated the next step instead of answering."""
-    stripped = (text or "").strip()
-    if stripped.lower() in _STUB_ANSWERS:
-        return True
-    return bool(_PLAN_RE.match(stripped))
-
-
-def should_stop_tool_loop(history: list[dict[str, Any]], *, turns: int = 0, max_turns: int = 8) -> bool:
-    """End web-tool loops once evidence exists; leave τ-style DB tools alone.
-
-    DeepSearchQA was burning 10+ minutes on repeated ``web_search`` /
-    ``open_url`` (one LangGraph turn each). Stop after a sourced page, a
-    duplicate, or three calls of the same web tool.
-    """
-    if turns >= max_turns:
-        return True
-    names = [str(item.get("name") or "") for item in history]
-    if not any(name in _WEB_TOOLS for name in names):
-        return False
-    if names.count("web_search") >= 3 or names.count("open_url") >= 3:
-        return True
-    if "web_search" not in names or "open_url" not in names:
-        return False
-    last = history[-1] if history else {}
-    last_name = str(last.get("name") or "")
-    result_s = json.dumps(last.get("result"), default=str).lower()
-    if "duplicate tool call" in result_s:
-        return True
-    if last_name == "open_url" and "error" not in result_s:
-        return True
-    if last_name == "web_search" and names.count("web_search") >= 2:
-        return True
-    return False
-
-
 def router_node(*, state: dict[str, Any], llm: Any, binding: AgentBinding) -> dict[str, Any]:
-    """ROUTER agent: picks the next tool call (or signals "done").
-
-    Prefers native function-calling via ``bind_tools`` so the model sees the
-    real JSON-Schema properties. Falls back to the legacy JSON-action text
-    protocol only when the model returns no ``tool_calls``.
-    """
+    """ROUTER agent: picks the next tool call (or signals "done")."""
     with _tracer.start_as_current_span("agent.router") as span:
         span.set_attribute(_AGENT_KIND_KEY, _AGENT_KIND_VAL)
         span.set_attribute("agent.name", "router")
@@ -95,97 +40,31 @@ def router_node(*, state: dict[str, Any], llm: Any, binding: AgentBinding) -> di
 
         task: TaskInput = state["task"]
         history = state.get("tool_calls", [])
-        if should_stop_tool_loop(history, turns=int(state.get("turns", 0))):
-            return {"final_answer": None, "next_action": None}
-        system = binding.render_system_prompt() + (
-            "\nYou are the support AGENT, not the customer. Never write in the "
-            "customer's first-person voice. On the first turn you MUST call a "
-            "lookup tool (find_user_id_by_email or find_user_id_by_name_zip) "
-            "with identifiers already in the task."
-            if binding.tool_schemas
-            else ""
-        )
-        tool_dicts = openai_tool_dicts(binding.tool_schemas)
-        tool_names = [str(d["function"]["name"]) for d in tool_dicts]
+        system = binding.render_system_prompt()
+        tool_names = [
+            str(schema.get("function", {}).get("name", ""))
+            for schema in binding.tool_schemas
+            if schema.get("function", {}).get("name")
+        ]
         user = _router_user_prompt(
             task=task,
             history=history,
             tool_names=tool_names,
-            native_tools=bool(tool_dicts),
         )
 
-        def _from_native(calls: list[Any]) -> dict[str, Any] | None:
-            if not calls:
-                return None
-            tc = calls[0]
-            name = str(tc.get("name") or "")
-            args = unwrap_tool_kwargs(tc.get("args") if isinstance(tc.get("args"), dict) else {})
-            if not name:
-                return None
-            return {"next_action": {"name": name, "arguments": args}}
-
-        reply_text, native_calls = _invoke_llm_native(
-            llm,
-            system,
-            user,
-            tool_dicts,
-            span,
-            tool_choice="required" if (tool_names and not history) else None,
-        )
-        chosen = _from_native(native_calls)
-        if chosen:
-            return chosen
+        reply_text = _invoke_llm(llm, system, user, span)
         parsed = _parse_json(reply_text)
+        if "final_answer" in parsed:
+            return {"final_answer": str(parsed["final_answer"]), "next_action": None}
         if "action" in parsed:
             return {
                 "next_action": {
                     "name": str(parsed["action"]),
-                    "arguments": unwrap_tool_kwargs(parsed.get("arguments") or {}),
+                    "arguments": parsed.get("arguments", {}) or {},
                 },
             }
-        # First turn with tools: do not accept a spoken/roleplay reply as final.
-        if tool_names and not history:
-            force_user = (
-                user
-                + "\n\nRETRY: you skipped tools. "
-                + (
-                    "Call web_search NOW with a concrete query from the question."
-                    if "web_search" in tool_names
-                    else (
-                        "Call find_user_id_by_email or find_user_id_by_name_zip NOW "
-                        "with values already in the task. Do not ask the user anything."
-                    )
-                )
-            )
-            reply_text, native_calls = _invoke_llm_native(
-                llm, system, force_user, tool_dicts, span, tool_choice="required"
-            )
-            chosen = _from_native(native_calls)
-            if chosen:
-                return chosen
-            parsed = _parse_json(reply_text)
-            if "action" in parsed:
-                return {
-                    "next_action": {
-                        "name": str(parsed["action"]),
-                        "arguments": unwrap_tool_kwargs(parsed.get("arguments") or {}),
-                    },
-                }
-            from ageneval.task.core.native_tools import bootstrap_lookup_call
-
-            boot = bootstrap_lookup_call(task.instruction, tool_names)
-            if boot:
-                return {"next_action": boot}
-            return {"final_answer": None, "next_action": None}
-        if "final_answer" in parsed:
-            answer = str(parsed["final_answer"])
-            if looks_like_plan(answer):
-                return {"final_answer": None, "next_action": None}
-            return {"final_answer": answer, "next_action": None}
-        if reply_text.strip() and not looks_like_plan(reply_text):
-            return {"final_answer": reply_text.strip(), "next_action": None}
-        # Plan / empty / no tool call → responder composes from history.
-        return {"final_answer": None, "next_action": None}
+        logger.warning("router got unstructured reply, terminating")
+        return {"final_answer": reply_text.strip() or "(no answer)", "next_action": None}
 
 
 def executor_run(*, state: dict[str, Any], binding: AgentBinding) -> dict[str, Any]:
@@ -213,38 +92,7 @@ def executor_run(*, state: dict[str, Any], binding: AgentBinding) -> dict[str, A
             tool_span.set_attribute(SpanAttributes.TOOL_PARAMETERS, args_json)
             tool_span.set_attribute(SpanAttributes.INPUT_VALUE, args_json)
             try:
-                from ageneval.task.core.native_tools import execute_recorded_tool, openai_function
-                from ageneval.task.core.result import ToolCall
-
-                tmp: list[ToolCall] = [
-                    ToolCall(
-                        name=str(tc.get("name") or ""),
-                        arguments=dict(tc.get("arguments") or {}),
-                        result=tc.get("result"),
-                    )
-                    for tc in (state.get("tool_calls") or [])
-                ]
-                available = [
-                    str(openai_function(s).get("name") or "")
-                    for s in (binding.tool_schemas or [])
-                    if openai_function(s).get("name")
-                ]
-                text = execute_recorded_tool(
-                    tool_name=name,
-                    kwargs=args if isinstance(args, dict) else {},
-                    executor=binding.tool_executor,
-                    initial_state=task.initial_state,
-                    recorder=tmp,
-                    available=available,
-                )
-                last = tmp[-1] if tmp else None
-                result = (
-                    last.result
-                    if last is not None and last.error is None
-                    else (last.result if last is not None else {"error": text})
-                )
-                if last is not None and last.error:
-                    result = last.result or {"error": last.error}
+                result = binding.tool_executor(name, args, task.initial_state)
             except Exception as exc:  # noqa: BLE001
                 tool_span.record_exception(exc)
                 span.record_exception(exc)
@@ -271,19 +119,18 @@ def responder_node(*, state: dict[str, Any], llm: Any) -> dict[str, Any]:
         span.set_attribute("agent.name", "responder")
 
         existing = state.get("final_answer")
-        if existing and not looks_like_plan(str(existing)):
+        if existing:
             return {"final_answer": existing}
 
         task: TaskInput = state["task"]
         history = state.get("tool_calls", [])
         system = (
-            "You are the responder. Produce the final answer for this task "
-            "from the instruction and tool results. Do not invent tool calls."
+            "You are the responder. Summarise what was done for the customer in one short paragraph."
         )
         user = (
-            f"Task: {task.instruction}\n"
-            f"Tool calls made: {clip_for_model(_public_history(history))}\n"
-            "Write the final answer only."
+            f"Customer request: {task.instruction}\n"
+            f"Tool calls made: {json.dumps(history, default=str)}\n"
+            "Write a concise customer-facing reply."
         )
         text = _invoke_llm(llm, system, user, span)
         return {"final_answer": text.strip() or "(no answer)"}
@@ -293,133 +140,14 @@ def responder_node(*, state: dict[str, Any], llm: Any) -> dict[str, Any]:
 
 
 def _invoke_llm(llm: Any, system: str, user: str, span: trace_api.Span) -> str:
+    from langchain_core.messages import HumanMessage, SystemMessage
+
     try:
-        return _complete_plain(llm, system, user)
+        ai_msg = llm.invoke([SystemMessage(content=system), HumanMessage(content=user)])
     except Exception as exc:  # noqa: BLE001
         span.record_exception(exc)
         raise
-
-
-def _invoke_llm_native(
-    llm: Any,
-    system: str,
-    user: str,
-    tool_dicts: list[dict[str, Any]],
-    span: trace_api.Span,
-    tool_choice: str | None = None,
-) -> tuple[str, list[dict[str, Any]]]:
-    """One router turn. Binds native OpenAI schemas when present; never re-invokes."""
-    if not tool_dicts:
-        try:
-            return _complete_plain(llm, system, user), []
-        except Exception as exc:  # noqa: BLE001
-            span.record_exception(exc)
-            raise
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    messages = [SystemMessage(content=system), HumanMessage(content=user)]
-    try:
-        kwargs: dict[str, Any] = {}
-        if tool_choice:
-            kwargs["tool_choice"] = tool_choice
-        ai_msg = llm.bind_tools(tool_dicts, **kwargs).invoke(messages)
-    except Exception as exc:  # noqa: BLE001
-        if tool_choice:
-            try:
-                ai_msg = llm.bind_tools(tool_dicts).invoke(messages)
-            except Exception as exc2:  # noqa: BLE001
-                span.record_exception(exc2)
-                raise
-        else:
-            span.record_exception(exc)
-            raise
-    text = _message_text(ai_msg)
-    calls = list(getattr(ai_msg, "tool_calls", None) or [])
-    # Do not spend a second LLM round when bind_tools returned empty —
-    # that doubled DeepSearchQA wall time (router + fallback per turn).
-    return text, calls
-
-
-def _complete_plain(llm: Any, system: str, user: str) -> str:
-    """Chat completion that keeps kimi-k3 ``reasoning_content``.
-
-    ``langchain_openai.ChatOpenAI`` drops hidden reasoning and can return
-    ``content=""`` with ``finish_reason=length`` after 4096 thinking tokens.
-    The official OpenAI client still exposes that text on the message.
-    """
-    from openai import OpenAI
-
-    from ageneval.task.core.budget import llm_timeout, max_tokens
-
-    model = (
-        getattr(llm, "model_name", None)
-        or getattr(llm, "model", None)
-        or os.environ.get("A2E_MODEL")
-        or "gpt-4o-mini"
-    )
-    key = getattr(llm, "openai_api_key", None)
-    if hasattr(key, "get_secret_value"):
-        key = key.get_secret_value()
-    base = (
-        getattr(llm, "openai_api_base", None)
-        or getattr(llm, "base_url", None)
-        or os.environ.get("OPENAI_API_BASE")
-    )
-    client = OpenAI(
-        api_key=str(key or os.environ.get("OPENAI_API_KEY") or ""),
-        base_url=str(base) if base else None,
-        timeout=llm_timeout(),
-    )
-    resp = client.chat.completions.create(
-        model=str(model),
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        max_tokens=max_tokens(),
-    )
-    msg = resp.choices[0].message
-    text = (msg.content or "").strip()
-    if text:
-        return text
-    dump = msg.model_dump() if hasattr(msg, "model_dump") else {}
-    for key_name in ("reasoning_content", "reasoning", "thinking"):
-        extra = dump.get(key_name)
-        if extra:
-            return str(extra).strip()
-    nested = dump.get("model_extra") or {}
-    if isinstance(nested, dict):
-        for key_name in ("reasoning_content", "reasoning", "thinking"):
-            extra = nested.get(key_name)
-            if extra:
-                return str(extra).strip()
-    return ""
-
-
-def _message_text(msg: Any) -> str:
-    """Visible reply, or kimi-k3 thinking if ``content`` is empty."""
-    content = getattr(msg, "content", "") or ""
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict):
-                text = block.get("text") or block.get("thinking") or block.get("reasoning_content")
-                if text:
-                    parts.append(str(text))
-        joined = "".join(parts).strip()
-        if joined:
-            return joined
-    elif str(content).strip():
-        return str(content)
-    extra = getattr(msg, "additional_kwargs", None) or {}
-    if isinstance(extra, dict):
-        for key in ("reasoning_content", "thinking", "text"):
-            text = extra.get(key)
-            if text:
-                return str(text).strip()
-    return str(content or "")
+    return getattr(ai_msg, "content", "") or ""
 
 
 def _router_user_prompt(
@@ -427,46 +155,17 @@ def _router_user_prompt(
     task: TaskInput,
     history: list[dict[str, Any]],
     tool_names: list[str] | None = None,
-    native_tools: bool = False,
 ) -> str:
     available = ", ".join(tool_names or []) or "(none)"
-    state_for_prompt = _public_state(task.initial_state)
-    history_for_prompt = _public_history(history)
-    if native_tools:
-        finish_hint = ""
-        names = [str(item.get("name") or "") for item in history]
-        if "web_search" in names and "open_url" in names:
-            finish_hint = (
-                "You already searched and opened a page. Reply with the final "
-                "answer now; do not call more tools.\n"
-            )
-        elif "web_search" in names:
-            finish_hint = (
-                "You already called web_search. Open one official URL, then "
-                "answer. Do not repeat the same search query.\n"
-            )
-        return (
-            f"Task: {task.instruction}\n"
-            f"Initial state: {json.dumps(state_for_prompt, default=str)}\n"
-            f"History so far: {json.dumps(history_for_prompt, default=str)}\n"
-            f"Available tools: {available}\n"
-            f"{finish_hint}"
-            "Call a tool via the function-calling interface with its named arguments. "
-            "Do not emit a JSON action object as plain text and do not wrap "
-            "arguments in arguments_json. "
-            "If History is empty you MUST call a tool first — never introduce "
-            "yourself as the customer. "
-            "When finished, reply to the customer in plain language with no tool call."
-        )
     tool_policy = (
         "Use an available tool before finishing when a tool can advance the task.\n"
         if tool_names
         else ""
     )
     return (
-        f"Task: {task.instruction}\n"
-        f"Initial state: {json.dumps(state_for_prompt, default=str)}\n"
-        f"History so far: {json.dumps(history_for_prompt, default=str)}\n"
+        f"Customer instruction: {task.instruction}\n"
+        f"Initial state: {json.dumps(task.initial_state, default=str)}\n"
+        f"History so far: {json.dumps(history, default=str)}\n"
         f"Available action names: {available}\n"
         f"{tool_policy}"
         "Return exactly one JSON object with no prose or Markdown.\n"
@@ -475,28 +174,6 @@ def _router_user_prompt(
         'To finish, return {"final_answer":"<answer>"}.\n'
         "Pick the next action."
     )
-
-
-def _public_state(state: Any) -> Any:
-    """Drop the live τ-bench DB deepcopy so the prompt stays small."""
-    if not isinstance(state, dict):
-        return state
-    return {k: v for k, v in state.items() if not str(k).startswith("__")}
-
-
-def _public_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for item in history:
-        row = {
-            "name": item.get("name"),
-            "arguments": item.get("arguments"),
-            "result": item.get("result"),
-        }
-        if isinstance(row["result"], dict):
-            row["result"] = {k: v for k, v in row["result"].items() if not str(k).startswith("__")}
-        row["result"] = clip_for_model(row["result"])
-        out.append(row)
-    return out
 
 
 def _parse_json(text: str) -> dict[str, Any]:

@@ -27,11 +27,15 @@ from ageneval.task.runners import (
     DATASETS,
     DEFAULT_SAMPLE_SIZE,
     EVALUATORS,
+    LLM_GRADERS,
+    apply_run_settings,
     build_experiment_metadata,
     build_run_identity,
+    format_run_settings,
     framework_for_agent,
     list_registries,
     make_llm_judge,
+    resolve_run_settings,
     sample_dataset,
 )
 
@@ -59,11 +63,15 @@ def _build_examples(tasks):
     return rows
 
 
-def _make_task_fn(agent, ds_entry: dict | None = None):
+_TAU_DATASETS = frozenset({"tau-bench", "tau2", "tau3", "tau3bench", "tau3-bench"})
+
+
+def _make_task_fn(agent, ds_entry: dict | None = None, dataset_key: str = ""):
     from ageneval.task.core import TaskInput
 
     ds_entry = ds_entry or {}
     is_sandbox = ds_entry.get("kind") == "sandbox"
+    is_tau = dataset_key in _TAU_DATASETS
     # For sandbox datasets the agent runs inside a per-task container managed by
     # SandboxScoringRunner, which also grades the result while the container is
     # alive (A2E evaluators run after task_fn returns — too late).
@@ -74,6 +82,18 @@ def _make_task_fn(agent, ds_entry: dict | None = None):
             score_fn=ds_entry["score"],
             setup_fn=ds_entry.get("setup"),
         )
+    elif is_tau:
+        # Official Sierra user simulator. task.instruction is the hidden
+        # customer script; harness run() loops stay untouched.
+        from ageneval.task.datasets.tau_bench.session import wrap_tau_official_session
+
+        runner = wrap_tau_official_session(agent)
+    elif dataset_key == "deepsearchqa":
+        from ageneval.task.datasets.deepsearchqa.session import (
+            wrap_dsqa_official_session,
+        )
+
+        runner = wrap_dsqa_official_session(agent)
 
     def task_fn(input: dict, metadata: dict) -> dict:
         task_input = TaskInput(
@@ -118,6 +138,22 @@ def _make_task_fn(agent, ds_entry: dict | None = None):
         extra = raw.get("additional_instructions")
         if extra:
             out["additional_instructions"] = str(extra)[:2000]
+        if is_tau:
+            from ageneval.task.datasets.tau_bench.reward import data_hash
+            from ageneval.task.datasets.tau_bench.runtime import load_domain_data
+
+            domain = str(
+                (task_input.initial_state or {}).get("__tau_domain__")
+                or (metadata or {}).get("domain")
+                or "retail"
+            )
+            if domain not in ("retail", "airline"):
+                domain = "retail"
+            db = (task_input.initial_state or {}).get("__tau_db__")
+            out["tau_domain"] = domain
+            out["tau_data_hash"] = data_hash(
+                db if isinstance(db, dict) else load_domain_data(domain)
+            )
         preview = raw.get("system_prompt_preview")
         if preview:
             out["system_prompt_preview"] = str(preview)[:500]
@@ -163,11 +199,16 @@ def _build_evaluator_list(names: list[str], judge_llm: Any | None):
         n = name.strip()
         if not n:
             continue
-        if n == "llm_judge":
+        if n in LLM_GRADERS:
             if judge_llm is None:
-                logger.warning("llm_judge requested but no LLM configured; skipped")
+                logger.warning("%s requested but no LLM configured; skipped", n)
                 continue
-            evaluators.append(make_llm_judge(judge_llm))
+            if n == "gdp_grader":
+                from ageneval.task.datasets.gdpval.grader import make_gdp_grader
+
+                evaluators.append(make_gdp_grader(judge_llm))
+            else:
+                evaluators.append(make_llm_judge(judge_llm))
             continue
         fn = EVALUATORS.get(n)
         if fn is None:
@@ -187,8 +228,8 @@ def main() -> int:
     parser.add_argument("--agent", default="agno", help=f"one of {sorted(AGENTS)}")
     parser.add_argument(
         "--evaluators",
-        default="exact_match,substring",
-        help="comma-separated names; pass empty string (\"\") for task-only (no scoring)",
+        default=None,
+        help="comma-separated names (default: this dataset's official evaluators); \"\" for task-only",
     )
     parser.add_argument(
         "--n",
@@ -221,6 +262,30 @@ def main() -> int:
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--endpoint", default=None, help="A2E OTLP endpoint override")
     parser.add_argument("--project-name", default=None)
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="override official max_turns / max_steps for this run (also sets A2E_MAX_TURNS)",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="override official max_tokens (also sets A2E_MAX_TOKENS)",
+    )
+    parser.add_argument(
+        "--llm-timeout",
+        type=float,
+        default=None,
+        help="override official per-request LLM timeout seconds (A2E_LLM_TIMEOUT)",
+    )
+    parser.add_argument(
+        "--run-deadline",
+        type=float,
+        default=None,
+        help="override official whole-agent wall seconds (A2E_RUN_DEADLINE)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s [%(levelname)s] %(message)s")
@@ -245,6 +310,17 @@ def main() -> int:
     # sandbox pins (A2E_SWE_INSTANCE / A2E_SWE_PRO_INSTANCE / A2E_TB2_TASK /
     # AEP_TB21_TASK) still win inside the registry wrappers.
     ds_entry = DATASETS[args.dataset]
+    settings = resolve_run_settings(
+        ds_entry,
+        max_turns=args.max_turns,
+        max_tokens=args.max_tokens,
+        llm_timeout=args.llm_timeout,
+        run_deadline=args.run_deadline,
+    )
+    apply_run_settings(settings)
+    print(format_run_settings(settings, dataset=args.dataset))
+    if args.evaluators is None:
+        args.evaluators = ",".join(ds_entry.get("default_evaluators") or [])
     load_kwargs: dict[str, Any] = {"n": None}
     bind_kwargs: dict[str, Any] = {}
     if args.dataset in ("tau-bench", "tau2", "tau3", "tau3bench", "tau3-bench"):
@@ -282,8 +358,10 @@ def main() -> int:
         agent_kwargs["api_base"] = args.api_base
     if args.api_key:
         agent_kwargs["api_key"] = args.api_key
-    # Sandbox datasets (SWE-bench) need many turns; apply dataset-recommended
-    # overrides (each builder ignores kwargs it doesn't accept).
+    agent_kwargs["max_turns"] = int(settings["max_turns"])
+    agent_kwargs["max_steps"] = int(settings["max_turns"])
+    # Sandbox datasets (SWE-bench) need many turns; apply remaining
+    # dataset-recommended overrides (each builder ignores kwargs it doesn't accept).
     for _k, _v in (ds_entry.get("agent_overrides") or {}).items():
         agent_kwargs.setdefault(_k, _v)
     agent = agent_entry["build"](**agent_kwargs)
@@ -332,7 +410,7 @@ def main() -> int:
 
     # 5. Build evaluators (incl. optional LLM judge)
     judge_llm = None
-    if "llm_judge" in args.evaluators:
+    if any(name.strip() in LLM_GRADERS for name in args.evaluators.split(",")):
         try:
             from a2e.evals.llm import LLM  # type: ignore
 
@@ -370,7 +448,7 @@ def main() -> int:
         f"▶ run {identity.run_id}: {args.dataset} x {args.agent} x "
         f"{actual_model} x [{eval_label}] over {len(examples)} examples"
     )
-    task_fn = _make_task_fn(agent, ds_entry)
+    task_fn = _make_task_fn(agent, ds_entry, args.dataset)
     run_kwargs: dict[str, Any] = dict(
         dataset=a2e_dataset,
         task=task_fn,
@@ -394,6 +472,12 @@ def main() -> int:
             "available_n": selection.available_n,
             "selected_n": selection.selected_n,
             "sample_task_ids": list(selection.task_ids),
+            "grader": settings.get("grader"),
+            "max_turns": settings["max_turns"],
+            "max_tokens": settings["max_tokens"],
+            "llm_timeout": settings["llm_timeout"],
+            "run_deadline": settings["run_deadline"],
+            "settings_sources": dict(settings.get("sources") or {}),
         },
     )
     # NOTE: the vendored a2e-client's sync run_experiment exposes no

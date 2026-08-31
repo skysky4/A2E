@@ -41,6 +41,12 @@ _STUB_FINALS = frozenset(
         "assistant",
         "none",
         "null",
+        "user: none",
+        "user:none",
+        "user: null",
+        "user:null",
+        "user:",
+        "human: none",
         "request timed out.",
         "request timed out",
         "<number>",
@@ -99,6 +105,15 @@ def _is_search_tool_dump(text: str) -> bool:
         and ('"text"' in t or "'text'" in t)
     ):
         return True
+    # CrewAI / ReAct leaked the tool call as the "final".
+    if re.search(r"\bto=(web_search|open_url)\b", low):
+        return True
+    if "code:" in low and '"query"' in t and "web_search" in low:
+        return True
+    if re.search(r"\baction\s*input\s*:", low) and any(
+        name in low for name in ("web_search", "open_url")
+    ):
+        return True
     return False
 
 
@@ -125,12 +140,103 @@ def _unwrap_final_text(text: str) -> str:
     return t
 
 
+def clean_final_answer(text: str) -> str:
+    """Unwrap JSON envelopes; return '' when the text is not a real answer."""
+    t = _unwrap_final_text(text or "")
+    return "" if is_unusable_final(t) else t
+
+
+_LEAKED_TOOL_NAMES = frozenset({"web_search", "open_url"})
+
+
+def _args_from_leaked_blob(raw_args: Any, name: str) -> dict[str, Any]:
+    """Recover query/url from a ReAct JSON blob, including truncated ones."""
+    from ageneval.task.core.openai_compat import coerce_json_object
+
+    if isinstance(raw_args, Mapping):
+        return dict(raw_args)
+    obj = coerce_json_object(raw_args)
+    if isinstance(obj, Mapping) and obj:
+        return dict(obj)
+    blob = str(raw_args or "")
+    if name == "web_search":
+        match = re.search(r'"query"\s*:\s*"((?:\\.|[^"\\])*)', blob)
+        if match:
+            return {"query": match.group(1).replace('\\"', '"')}
+        stripped = blob.strip().strip('"').strip()
+        if stripped and not stripped.startswith("{") and len(stripped) < 240:
+            return {"query": stripped}
+    if name == "open_url":
+        match = re.search(r'"url"\s*:\s*"((?:\\.|[^"\\])*)', blob)
+        if match:
+            return {"url": match.group(1)}
+        stripped = blob.strip().strip('"').strip()
+        if stripped.startswith("http"):
+            return {"url": stripped}
+    return {}
+
+
+def parse_leaked_tool_calls(text: str) -> list[dict[str, Any]]:
+    """Recover official DSQA tools written as ReAct / ``to=name code:`` text.
+
+    CrewAI (and some ReAct prompts) emit the intended ``web_search`` /
+    ``open_url`` call as the 'final' instead of dispatching it. The harness
+    loop is unchanged; the DSQA session executes these recovered calls
+    through the binding so the recorded trajectory matches the model intent.
+    """
+    t = text or ""
+    found: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(name: str, raw_args: Any) -> None:
+        tool = str(name or "").strip().lower()
+        if tool not in _LEAKED_TOOL_NAMES:
+            return
+        args = _args_from_leaked_blob(raw_args, tool)
+        if tool == "web_search" and not str(args.get("query") or "").strip():
+            return
+        if tool == "open_url" and not str(args.get("url") or "").strip():
+            return
+        key = (tool, json.dumps(args, sort_keys=True, default=str))
+        if key in seen:
+            return
+        seen.add(key)
+        found.append({"name": tool, "arguments": args})
+
+    for match in re.finditer(r"\bto=(web_search|open_url)\b", t, flags=re.I):
+        rest = t[match.end() : match.end() + 500]
+        code = re.search(r"code:\s*(\{[\s\S]+)", rest)
+        if not code:
+            continue
+        blob = code.group(1)
+        nxt = re.search(r"\n\s*to=(?:web_search|open_url)\b", blob, flags=re.I)
+        if nxt:
+            blob = blob[: nxt.start()]
+        _add(match.group(1), blob.strip())
+    for match in re.finditer(
+        r"\bAction\s*:\s*(web_search|open_url)\s*"
+        r"(?:[\s\S]{0,80}?)\bAction\s*Input\s*:\s*(\{.*?\}|[^\n]+)",
+        t,
+        flags=re.I,
+    ):
+        _add(match.group(1), match.group(2).strip())
+    for match in re.finditer(
+        r"\b(web_search|open_url)\b[^\n]{0,48}(\{[^{}\n]*\})",
+        t,
+        flags=re.I,
+    ):
+        _add(match.group(1), match.group(2))
+    return found
+
+
 def is_unusable_final(text: str) -> bool:
     """True when a 'final' is empty, a plan, or a prompt placeholder."""
-    t = (text or "").strip()
+    t = _unwrap_final_text(text or "")
     if not t or t.lower() in _STUB_FINALS:
         return True
     low = t.lower()
+    if re.match(r"^(user|assistant|system|human|tool)\s*:\s*(none|null)?\s*$", low):
+        return True
     if low.startswith(("i'll", "i will", "let me", "i need to", "thought:")):
         return True
     # Strip stage directions ("*speaking quietly*") and fillers before the greeting.
@@ -463,9 +569,9 @@ def bootstrap_lookup_call(
 
 def unwrap_tool_kwargs(kwargs: Mapping[str, Any]) -> dict[str, Any]:
     """Recover real args if a model nested them under a single wrapper key."""
-    args = dict(kwargs)
-    from ageneval.task.core.openai_compat import sanitize_tool_arguments
+    from ageneval.task.core.openai_compat import coerce_json_object, sanitize_tool_arguments
 
+    args = dict(kwargs)
     for key, val in list(args.items()):
         if isinstance(val, str) and (val.strip().startswith("{}") or "{}{" in val):
             fixed = sanitize_tool_arguments(val)
@@ -483,12 +589,12 @@ def unwrap_tool_kwargs(kwargs: Mapping[str, Any]) -> dict[str, Any]:
     if only_key in ("kwargs", "arguments", "args") and isinstance(only_val, dict):
         return dict(only_val)
     if only_key == "arguments_json" and isinstance(only_val, str):
-        try:
-            parsed = json.loads(only_val or "{}")
-        except (ValueError, TypeError):
-            return args
-        if isinstance(parsed, dict):
-            return parsed
+        parsed = coerce_json_object(only_val)
+        return parsed or args
+    if isinstance(only_val, list) and only_val:
+        if isinstance(only_val[0], dict):
+            return dict(only_val[0])
+        return {only_key: only_val[0]}
     return args
 
 
@@ -576,8 +682,26 @@ _WRITE_NUDGE = (
 )
 
 
-def _hint_after_repeat() -> str:
-    if os.environ.get("A2E_TAU_NEED_WRITE") == "1":
+def _binding_name(binding: Any) -> str:
+    return str(getattr(binding, "name", "") or "")
+
+
+def _is_tau_binding(binding: Any) -> bool:
+    name = _binding_name(binding)
+    return name.startswith(("tau-bench-", "tau2-", "tau3-"))
+
+
+def _is_dsqa_binding(binding: Any) -> bool:
+    return "deepsearch" in _binding_name(binding)
+
+
+def _tau_force_write_enabled() -> bool:
+    return os.environ.get("A2E_TAU_FORCE_WRITE", os.environ.get("A2E_TAU_NEED_WRITE", "")) == "1"
+
+
+def _hint_after_repeat(available: Sequence[str] | None = None) -> str:
+    names = {str(n) for n in (available or ())}
+    if names & RETAIL_WRITE_TOOLS and _tau_force_write_enabled():
         return _WRITE_NUDGE
     return _STOP_HINT
 
@@ -611,7 +735,9 @@ def _retail_write_done(recorder: Sequence[ToolCall]) -> bool:
 
 
 def need_force_retail_write(binding: Any, task: Any) -> bool:
-    """Gold-write τ rows: skip SDK loops that drop tool_choice / invent tools."""
+    """Opt-in τ-only write continuation. Off by default so other benches are untouched."""
+    if not _is_tau_binding(binding) or not _tau_force_write_enabled():
+        return False
     names: list[str] = []
     for schema in getattr(binding, "tool_schemas", None) or ():
         if isinstance(schema, dict):
@@ -619,11 +745,7 @@ def need_force_retail_write(binding: Any, task: Any) -> bool:
         else:
             name = getattr(schema, "name", "")
         names.append(str(name or ""))
-    if not any(name in RETAIL_WRITE_TOOLS for name in names):
-        return False
-    return os.environ.get("A2E_TAU_NEED_WRITE") == "1" or "already confirm" in (
-        getattr(task, "instruction", "") or ""
-    ).lower()
+    return any(name in RETAIL_WRITE_TOOLS for name in names)
 
 
 def _as_tool_dict(result: Any) -> dict[str, Any]:
@@ -1013,9 +1135,7 @@ def _complete_confirmed_retail_write(
     """
     if _retail_write_done(recorder):
         return
-    if os.environ.get("A2E_TAU_NEED_WRITE") != "1" and "already confirm" not in (
-        getattr(task, "instruction", "") or ""
-    ).lower():
+    if not _is_tau_binding(binding) or not _tau_force_write_enabled():
         return
     instruction = getattr(task, "instruction", "") or ""
     _ensure_user_and_orders(binding, task, recorder)
@@ -1066,7 +1186,7 @@ def _execute_recorded_tool_locked(
             ),
             "tool": tool_name,
         }
-        return clip_for_model(payload) + _hint_after_repeat()
+        return clip_for_model(payload) + _hint_after_repeat(available)
 
     if tool_name in {"web_search", "open_url"}:
         same = sum(1 for tc in recorder if tc.name == tool_name)
@@ -1080,7 +1200,11 @@ def _execute_recorded_tool_locked(
             # Do not append: 4+ identical web tools is a TRAJ fail.
             return clip_for_model(payload) + _STOP_HINT
 
-    if tool_name == "transfer_to_human_agents" and os.environ.get("A2E_TAU_NEED_WRITE") == "1":
+    if (
+        tool_name == "transfer_to_human_agents"
+        and _tau_force_write_enabled()
+        and RETAIL_WRITE_TOOLS.intersection(str(n) for n in (available or ()))
+    ):
         payload = {
             "error": (
                 "transfer_to_human_agents is not allowed on this task; "
@@ -1145,7 +1269,7 @@ def _execute_recorded_tool_locked(
         recorder.append(
             ToolCall(name=tool_name, arguments=args, result=payload, error=payload["error"])
         )
-        return clip_for_model(payload) + _hint_after_repeat()
+        return clip_for_model(payload) + _hint_after_repeat(available)
 
     key = _canon_call(tool_name, args)
     if any(_canon_call(tc.name, tc.arguments or {}) == key for tc in recorder):
@@ -1155,7 +1279,7 @@ def _execute_recorded_tool_locked(
             "arguments": args,
         }
         recorder.append(ToolCall(name=tool_name, arguments=args, result=payload, error=payload["error"]))
-        return clip_for_model(payload) + _hint_after_repeat()
+        return clip_for_model(payload) + _hint_after_repeat(available)
 
     try:
         result = executor(tool_name, args, initial_state)
@@ -1195,19 +1319,87 @@ def is_stop_tool_result(text: str) -> bool:
     )
 
 
+def evidence_from_tool_call(tc: ToolCall) -> str:
+    """Readable evidence from a recorded tool. JSON wrappers are not answers."""
+    res = getattr(tc, "result", None)
+    name = str(getattr(tc, "name", "") or "")
+    if name == "web_search":
+        if not isinstance(res, Mapping):
+            return ""
+        if res.get("error") and not (res.get("results") or res.get("organic")):
+            return ""
+        lines: list[str] = []
+        for item in res.get("results") or res.get("organic") or []:
+            if isinstance(item, str):
+                if item.strip():
+                    lines.append(item.strip())
+                continue
+            if not isinstance(item, Mapping):
+                continue
+            title = str(item.get("title") or "").strip()
+            url = str(item.get("url") or item.get("link") or "").strip()
+            snippet = str(
+                item.get("snippet") or item.get("text") or item.get("body") or ""
+            ).strip()
+            block = "\n".join(x for x in (title, url, snippet) if x)
+            if block:
+                lines.append(block)
+            if len(lines) >= 8:
+                break
+        return "\n\n".join(lines)[:8000]
+    if name == "open_url":
+        if isinstance(res, Mapping):
+            if res.get("error") and not res.get("text"):
+                return ""
+            url = str(res.get("url") or "").strip()
+            text = str(res.get("text") or res.get("content") or res.get("page") or "").strip()
+            if not text:
+                return ""
+            return f"{url}\n{text}"[:20000]
+        if isinstance(res, str) and res.strip() and not _is_search_tool_dump(res):
+            return res.strip()
+        return ""
+    if getattr(tc, "error", None) and "budget" not in str(tc.error).lower():
+        return ""
+    clip = clip_for_model(res)
+    if (
+        not clip
+        or is_stop_tool_result(clip)
+        or is_unusable_final(clip)
+        or _is_search_tool_dump(clip)
+    ):
+        return ""
+    return clip
+
+
+def _focus_evidence(text: str, instruction: str, limit: int = 4500) -> str:
+    """Keep the page head plus the section that mentions the question words."""
+    raw = (text or "").strip()
+    if len(raw) <= limit:
+        return raw
+    keys = [
+        tok.lower()
+        for tok in re.findall(r"[A-Za-z][A-Za-z0-9\-]{3,}", instruction or "")
+        if tok.lower() not in _DSQA_STOP
+    ]
+    for extra in ("balance", "coordination", "causes", "cause", "denied", "certiorari"):
+        if extra not in keys:
+            keys.append(extra)
+    low = raw.lower()
+    for key in keys:
+        pos = low.find(key)
+        if pos >= 200:
+            start = max(0, pos - 350)
+            return (raw[:700] + "\n...\n" + raw[start : start + limit]).strip()
+    return raw[:limit]
+
+
 def fallback_final_from_tools(recorder: Sequence[ToolCall]) -> str:
-    """Last successful tool clip — used when a harness loop ends with no text."""
+    """Last successful tool evidence — used when a harness loop ends with no text."""
     for tc in reversed(list(recorder or ())):
-        if tc.error and "budget" not in str(tc.error) and "duplicate" not in str(tc.error):
-            continue
-        clip = clip_for_model(tc.result)
-        if (
-            clip
-            and not is_stop_tool_result(clip)
-            and not is_unusable_final(clip)
-            and not _is_search_tool_dump(clip)
-        ):
-            return clip
+        ev = evidence_from_tool_call(tc)
+        if ev:
+            return ev
     return ""
 
 
@@ -1226,16 +1418,14 @@ def compose_final_answer(
 
         hist = []
         for tc in recorder:
-            if tc.error and "budget" not in str(tc.error) and "duplicate" not in str(tc.error):
-                continue
-            clip = clip_for_model(tc.result)
-            if _is_search_tool_dump(clip) or is_unusable_final(clip):
+            ev = evidence_from_tool_call(tc)
+            if not ev:
                 continue
             hist.append(
                 {
                     "name": tc.name,
                     "arguments": tc.arguments,
-                    "result": clip,
+                    "result": _focus_evidence(ev, instruction),
                 }
             )
         from ageneval.task.core.budget import llm_timeout as _llm_timeout
@@ -1250,8 +1440,9 @@ def compose_final_answer(
 
         sys_msg = (
             "Write the complete final answer only. "
-            "If tool results are present, use them; "
-            "if there are no tools, produce the full requested deliverable. "
+            "If tool results are present, answer from those pages/snippets only. "
+            "Prefer an opened official page over a search snippet. "
+            "If there are no tools, produce the full requested deliverable. "
             "No plan, no tool calls, no preamble, no 'I will start'. "
             "If the task asked for a JSON envelope, return "
             '{"final_answer":"..."} only; otherwise write the deliverable itself.'
@@ -1369,6 +1560,81 @@ def _binding_tool_names(binding: AgentBinding) -> list[str]:
     return names
 
 
+def tool_call_key(name: str, args: Mapping[str, Any]) -> str:
+    """Stable identity for one ``(tool, arguments)`` pair."""
+    return _canon_call(name, canonicalize_tool_args(name, args))
+
+
+def cached_tool_result(recorder: Sequence[ToolCall], name: str, args: Mapping[str, Any]) -> Any:
+    key = tool_call_key(name, args)
+    for tc in recorder:
+        if tool_call_key(tc.name, tc.arguments or {}) == key:
+            return tc
+    return None
+
+
+def _state_tool_cache(initial_state: Mapping[str, Any]) -> list[ToolCall] | None:
+    """Persist unique calls on the shared task state (survives a new ``run()``)."""
+    if not isinstance(initial_state, dict):
+        return None
+    raw = initial_state.get("__a2e_tool_cache__")
+    if raw is None:
+        initial_state["__a2e_tool_cache__"] = []
+        raw = initial_state["__a2e_tool_cache__"]
+    return raw if isinstance(raw, list) else None
+
+
+def execute_unique_recorded(
+    *,
+    tool_name: str,
+    kwargs: Mapping[str, Any],
+    executor: Any,
+    initial_state: Mapping[str, Any],
+    recorder: list[ToolCall],
+) -> str:
+    """Run the binding executor once per unique ``(name, args)``.
+
+    Identical repeats reuse the previous result and are not written again.
+    The cache lives on ``initial_state`` so official τ user-sim re-invokes
+    of the same harness do not re-record lookups.
+    """
+    args = unwrap_tool_kwargs(kwargs)
+    cache = _state_tool_cache(initial_state)
+    seen: list[ToolCall] = []
+    if cache:
+        seen.extend(tc for tc in cache if isinstance(tc, ToolCall))
+    seen.extend(recorder)
+    def _clip(value: Any) -> str:
+        # τ product JSON is ~3k; the default 2500-char clip drops variants.
+        tau = isinstance(initial_state, dict) and (
+            initial_state.get("__tau_db__") or initial_state.get("__tau_domain__")
+        )
+        return clip_for_model(value, max_chars=16000 if tau else None)
+
+    if tool_name in {"find_user_id_by_name_zip", "find_user_id_by_email"}:
+        for tc in seen:
+            if tc.name == tool_name and not tc.error:
+                return _clip(tc.result)
+    prior = cached_tool_result(seen, tool_name, args)
+    if prior is not None:
+        if prior.error:
+            return _clip({"error": prior.error})
+        return _clip(prior.result)
+    try:
+        result = executor(tool_name, args, initial_state)
+    except Exception as exc:  # noqa: BLE001
+        rec = ToolCall(name=tool_name, arguments=args, result=None, error=str(exc))
+        recorder.append(rec)
+        if cache is not None:
+            cache.append(rec)
+        return _clip({"error": str(exc)})
+    rec = ToolCall(name=tool_name, arguments=args, result=result)
+    recorder.append(rec)
+    if cache is not None:
+        cache.append(rec)
+    return _clip(result)
+
+
 def invoke_binding_tool(
     *,
     tool_name: str,
@@ -1377,13 +1643,13 @@ def invoke_binding_tool(
     task: TaskInput,
     recorder: list[ToolCall],
 ) -> str:
-    return execute_recorded_tool(
+    """Adapter-only dispatch: unwrap kwargs, run the binding executor, record."""
+    return execute_unique_recorded(
         tool_name=tool_name,
         kwargs=kwargs,
         executor=binding.tool_executor,
         initial_state=task.initial_state,
         recorder=recorder,
-        available=_binding_tool_names(binding),
     )
 
 
@@ -1819,10 +2085,8 @@ async def maybe_force_retail_write_trace(
 
 
 def finish_retail_write_on_trace(*, binding: Any, task: Any, trace: Any) -> Any:
-    """Post-SDK: append missing retail writes so leftover rows stay TRAJ-OK."""
-    if os.environ.get("A2E_TAU_NEED_WRITE") != "1" and "already confirm" not in (
-        getattr(task, "instruction", "") or ""
-    ).lower():
+    """Opt-in τ-only post-pass. Default off so other benchmarks are untouched."""
+    if not _is_tau_binding(binding) or not _tau_force_write_enabled():
         return trace
     from dataclasses import replace
 
@@ -1850,7 +2114,7 @@ def finish_retail_write_on_trace(*, binding: Any, task: Any, trace: Any) -> Any:
 
 
 def need_force_dsqa_search(binding: Any) -> bool:
-    if os.environ.get("A2E_DSQA_FORCE") != "1":
+    if not _is_dsqa_binding(binding) or os.environ.get("A2E_DSQA_FORCE") != "1":
         return False
     names: list[str] = []
     for schema in getattr(binding, "tool_schemas", None) or ():

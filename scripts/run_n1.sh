@@ -18,14 +18,15 @@ export no_proxy="127.0.0.1,localhost,${no_proxy:-}"
 export NO_PROXY="$no_proxy"
 
 case "$dataset" in
-  deepsearchqa) evals="deepsearch_match,tool_recall" ;;
-  tau-bench|tau2|tau3|tau3bench|tau3-bench|traject-bench) evals="tool_recall" ;;
+  deepsearchqa) evals="deepsearch_grader" ;;
+  tau-bench|tau2|tau3|tau3bench|tau3-bench) evals="tau_grader" ;;
+  traject-bench) evals="tool_recall" ;;
   mmlu|gpqa|mmlu-pro|arc-challenge|truthfulqa|agieval|commonsenseqa|hellaswag|openbookqa) evals="mc_letter" ;;
   gsm8k|math) evals="numeric_match" ;;
   humaneval) evals="humaneval_pass" ;;
   persistbench) evals="substring" ;;
   bbh) evals="exact_match" ;;
-  gdpval-aa) evals="llm_judge" ;;
+  gdpval-aa) evals="gdp_grader" ;;
   gdpval) echo "dataset gdpval was removed; use gdpval-aa (HF openai/gdpval)" >&2; exit 2 ;;
   *) echo "unknown dataset: $dataset" >&2; exit 2 ;;
 esac

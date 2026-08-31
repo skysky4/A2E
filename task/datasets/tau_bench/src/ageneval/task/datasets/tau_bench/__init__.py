@@ -9,6 +9,9 @@ __all__ = [
     "build_tau_bench_binding",
     "get_tool_schemas",
     "load_tau_bench_tasks",
+    "official_tau_reward",
+    "tau_grader",
+    "wrap_tau_official_session",
 ]
 
 
@@ -25,4 +28,16 @@ def __getattr__(name: str) -> Any:
         from ageneval.task.datasets.tau_bench.tools import get_tool_schemas
 
         return get_tool_schemas
+    if name in {"official_tau_reward", "tau_grader"}:
+        if name == "tau_grader":
+            from ageneval.task.datasets.tau_bench.grader import tau_grader
+
+            return tau_grader
+        from ageneval.task.datasets.tau_bench.reward import official_tau_reward
+
+        return official_tau_reward
+    if name == "wrap_tau_official_session":
+        from ageneval.task.datasets.tau_bench.session import wrap_tau_official_session
+
+        return wrap_tau_official_session
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

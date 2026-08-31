@@ -18,9 +18,9 @@ export no_proxy="127.0.0.1,localhost,${no_proxy:-}"
 export NO_PROXY="$no_proxy"
 
 case "$dataset" in
-  deepsearchqa) evals="deepsearch_match,tool_recall" ;;
-  tau-bench|tau2|tau3|tau3bench|tau3-bench) evals="tool_recall" ;;
-  gdpval-aa) evals="llm_judge" ;;
+  deepsearchqa) evals="deepsearch_grader" ;;
+  tau-bench|tau2|tau3|tau3bench|tau3-bench) evals="tau_grader" ;;
+  gdpval-aa) evals="gdp_grader" ;;
   *) echo "unknown full-run dataset: $dataset" >&2; exit 2 ;;
 esac
 

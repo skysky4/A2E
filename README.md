@@ -100,6 +100,10 @@ uv run --frozen python examples/run_experiment.py \
   --full                     # use the official split instead of --n
   --sample-seed 20260816 \
   --domain  retail           # tau-bench / tau2 / tau3
+  --max-turns 30 \
+  --max-tokens 4096 \
+  --llm-timeout 180 \
+  --run-deadline 1100
 ```
 
 | Flag | Purpose |
@@ -108,11 +112,15 @@ uv run --frozen python examples/run_experiment.py \
 | `--dataset` | Dataset name (required) |
 | `--agent` | Agent harness (default `agno`) |
 | `--model` | Override `A2E_MODEL` for this run |
-| `--evaluators` | Comma-separated scorers |
+| `--evaluators` | Comma-separated graders (default: this dataset's official grader) |
 | `--n` | Sample size (absolute count, random without replacement) |
 | `--full` | Run the official split (ignore `--n`) |
 | `--sample-seed` | Reproducible sample (official cells use `20260816`) |
 | `--domain` | `retail` / `airline` (tau-bench / tau2 / tau3) |
+| `--max-turns` | Override official `max_turns` (prints the resolved value) |
+| `--max-tokens` | Override official `max_tokens` |
+| `--llm-timeout` | Override official per-request LLM timeout (seconds) |
+| `--run-deadline` | Override official whole-agent wall (seconds) |
 
 ```bash
 cd task
@@ -121,7 +129,12 @@ uv run --frozen python examples/run_experiment.py --list
 
 ### Official cell budgets
 
-`scripts/run_n1.sh` and `scripts/run_full.sh` apply the same per-dataset caps (override with env vars if needed):
+Canonical per-benchmark numbers live on each `DATASETS` entry as `official_settings` in
+`task/runners/src/ageneval/task/runners/registry.py`. The CLI prints the resolved
+values at start-up. Precedence: `--max-turns` / `--max-tokens` / `--llm-timeout` /
+`--run-deadline` → env (`A2E_MAX_TURNS`, `A2E_MAX_TOKENS`, `A2E_LLM_TIMEOUT`,
+`A2E_RUN_DEADLINE`) → `official_settings`. `scripts/run_n1.sh` and
+`scripts/run_full.sh` set the same official caps via env (you can still pass CLI flags after the dataset name):
 
 | Dataset | `max_turns` | `max_tokens` | LLM timeout | wall / deadline |
 |---------|-------------|--------------|-------------|-----------------|
@@ -138,16 +151,16 @@ it; use `--list` to inspect every available benchmark, harness, and evaluator.
 
 | Benchmark              | Kind    | Built-in default evaluators                                  | Sandbox |
 | ---------------------- | ------- | ------------------------------------------------------------ | ------- |
-| `tau-bench`          | Tool    | `tool_recall`, `llm_judge`                               | /       |
-| `tau2`               | Tool    | `tool_recall`, `llm_judge`                               | /       |
-| `tau3`               | Tool    | `tool_recall`, `llm_judge`                               | /       |
+| `tau-bench`          | Tool    | `tau_grader` (Sierra `calculate_reward` pass^1)          | /       |
+| `tau2`               | Tool    | `tau_grader` (Sierra `calculate_reward` pass^1)          | /       |
+| `tau3`               | Tool    | `tau_grader` (Sierra `calculate_reward` pass^1)          | /       |
 | `traject-bench`      | Tool    | `tool_recall`, `llm_judge`                               | /       |
-| `deepsearchqa`       | Tool    | `deepsearch_match`, `tool_recall`                        | HF [`google/deepsearchqa`](https://huggingface.co/datasets/google/deepsearchqa) |
+| `deepsearchqa`       | Tool    | `deepsearch_grader`                                      | HF [`google/deepsearchqa`](https://huggingface.co/datasets/google/deepsearchqa) |
 | `mmlu`               | QA      | `mc_letter`, `llm_judge`                                 | /       |
 | `gsm8k`              | QA      | `numeric_match`, `llm_judge`                             | /       |
 | `humaneval`          | QA      | `humaneval_pass`                                         | /       |
 | `persistbench`       | QA      | `substring`, `llm_judge`                                 | /       |
-| `gdpval-aa`          | QA      | `llm_judge`                                                | HF [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) |
+| `gdpval-aa`          | QA      | `gdp_grader` (in-run rubric judge; pairwise Elo is off-run) | HF [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) |
 | `gpqa`               | QA      | `mc_letter`, `llm_judge`                                 | /       |
 | `mmlu-pro`           | QA      | `mc_letter`, `llm_judge`                                 | /       |
 | `arc-challenge`      | QA      | `mc_letter`, `llm_judge`                                 | /       |
