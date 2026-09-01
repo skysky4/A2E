@@ -3,7 +3,8 @@
 τ-bench dataset adapter for A2E.
 
 Provides:
-- `load_tau_bench_tasks(domain, n)` — return ``TaskInput`` records.
+- `load_tau_bench_tasks(domain, n, task_ids=...)` — return all tasks or an explicit
+  ordered subset as ``TaskInput`` records.
 - `get_tool_schemas(domain)` — OpenAI-compatible function specs for the
   ``retail`` / ``airline`` domain (used by both single- and multi-agent agents).
 

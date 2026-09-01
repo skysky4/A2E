@@ -41,6 +41,7 @@ def load_tau_bench_tasks(
     domain: Domain = "retail",
     n: int | None = None,
     source: Literal["auto", "upstream", "vendor"] = "auto",
+    task_ids: Sequence[str] | None = None,
 ) -> TauBenchDataset:
     """Load τ-bench tasks.
 
@@ -48,6 +49,7 @@ def load_tau_bench_tasks(
         domain: ``retail`` or ``airline``.
         n: Optional cap on the number of tasks returned.
         source: ``auto`` tries upstream first, then vendor.
+        task_ids: Optional task IDs to select, in the requested order.
 
     Returns:
         A ``TauBenchDataset`` ready to feed an ``ExperimentRunner``.
@@ -68,6 +70,13 @@ def load_tau_bench_tasks(
     else:
         tasks = _load_vendor(domain)
         mode = "vendor"
+
+    if task_ids:
+        tasks_by_id = {task.task_id: task for task in tasks}
+        missing = [task_id for task_id in task_ids if task_id not in tasks_by_id]
+        if missing:
+            raise ValueError(f"unknown τ-bench {domain} task IDs: {missing}")
+        tasks = [tasks_by_id[task_id] for task_id in task_ids]
 
     if n is not None:
         tasks = tasks[:n]

@@ -1,7 +1,7 @@
 schema_version: 1
-id: gpt-5.6-sol
+id: deepseek-v4-flash
 provider: openai-compatible
-model: gpt-5.6-sol
+model: deepseek-v4-flash
 upstream_protocol: openai_chat_completions
 connection:
   base_url_env: OPENAI_API_BASE
@@ -10,9 +10,9 @@ capabilities:
   tools: true
   streaming: true
   vision: false
-  structured_output: true
+  structured_output: false
 concurrency:
-  group: gpt-5.6-sol
+  group: deepseek-v4-flash
   max_sessions: 32
 gateway:
   interfaces:

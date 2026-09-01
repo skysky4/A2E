@@ -1,0 +1,26 @@
+schema_version: 1
+id: tau2
+kind: tool
+loader:
+  entrypoint: ageneval.task.datasets.tau2.loader:load_tau2_tasks
+  accepts: [domain, n, split]
+binding:
+  entrypoint: ageneval.task.datasets.tau2.binding:build_tau2_binding
+  accepts: [domain]
+grader:
+  entrypoint: ageneval.task.datasets.tau2.grader:GRADER
+session:
+  entrypoint: ageneval.task.datasets.tau_bench.session:wrap_tau_official_session
+  defaults:
+    user_strategy: llm
+    user_model: deepseek-v4-flash
+    user_error_policy: fail
+    max_responds: 12
+defaults:
+  max_turns: 30
+  max_tokens: 4096
+  llm_timeout: 180
+  run_deadline: 1100
+  wall: 1200
+agent_overrides: {max_turns: 30, max_steps: 30}
+resources: {docker: false, network: true}

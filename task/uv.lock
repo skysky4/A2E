@@ -931,6 +931,8 @@ source = { editable = "runners" }
 dependencies = [
     { name = "ageneval-task-core" },
     { name = "ageneval-task-tau-bench" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -959,6 +961,8 @@ requires-dist = [
     { name = "ageneval-task-langgraph-agent", marker = "extra == 'all'", editable = "agents/langgraph" },
     { name = "ageneval-task-langgraph-agent", marker = "extra == 'langgraph'", editable = "agents/langgraph" },
     { name = "ageneval-task-tau-bench", editable = "datasets/tau_bench" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 provides-extras = ["claude", "langgraph", "smolagents", "all"]
 

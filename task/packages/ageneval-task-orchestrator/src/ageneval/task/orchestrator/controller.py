@@ -129,6 +129,8 @@ class CampaignController:
         self.resume = resume
         self.profiles: dict[str, ModelProfile] = {}
         self.profile_paths: dict[str, Path] = {}
+        self.benchmark_profiles: dict[str, Any] = {}
+        self.benchmark_profile_paths: dict[str, Path] = {}
         self.tasks: dict[str, list[dict[str, Any]]] = {}
         self.benchmarks: dict[str, dict[str, Any]] = {}
         self.plan: CampaignPlan | None = None
@@ -211,15 +213,32 @@ class CampaignController:
             self.profile_paths[model_ref] = path.resolve()
 
         locked_selections = {}
+        locked_benchmark_profiles: dict[str, Any] = {}
         if self.resume:
             self.lock = self.run_directory.verify_config(
                 self.config.model_dump(mode="json", exclude_none=False)
             )
             locked_selections = self.lock.get("selections") or {}
+            locked_benchmark_profiles = self.lock.get("benchmark_profiles") or {}
 
         selected_ids: dict[str, list[str]] = {}
         for benchmark in self.config.benchmarks:
             ds_entry = DATASETS[benchmark.id]
+            benchmark_profile = ds_entry["profile"]
+            benchmark_profile_path = Path(ds_entry["profile_path"])
+            self.benchmark_profiles[benchmark.id] = benchmark_profile
+            self.benchmark_profile_paths[benchmark.id] = benchmark_profile_path
+            if locked_benchmark_profiles:
+                locked_profile = locked_benchmark_profiles.get(benchmark.id)
+                if locked_profile is None:
+                    raise ValueError(
+                        f"benchmark profile {benchmark.id!r} is missing from campaign lock"
+                    )
+                if benchmark_profile.digest() != locked_profile.get("digest"):
+                    raise ValueError(
+                        f"benchmark profile {benchmark.id!r} changed since this "
+                        "campaign was locked"
+                    )
             load_kwargs = dict(benchmark.args)
             if benchmark.domain:
                 load_kwargs["domain"] = benchmark.domain
@@ -281,6 +300,12 @@ class CampaignController:
             graders = [grader]
             self.benchmarks[benchmark.id] = {
                 **benchmark.model_dump(mode="json"),
+                "profile_digest": benchmark_profile.digest(),
+                "timeout_seconds": (
+                    self.config.execution.timeout_seconds
+                    if self.config.execution.timeout_seconds is not None
+                    else benchmark_profile.defaults.run_deadline
+                ),
                 "graders": [grader.model_dump(mode="json") for grader in graders],
                 "selection": selection,
             }
@@ -361,6 +386,14 @@ class CampaignController:
                     }
                     for name, profile in self.profiles.items()
                 },
+                "benchmark_profiles": {
+                    name: {
+                        "path": str(self.benchmark_profile_paths[name]),
+                        "digest": profile.digest(),
+                        "profile": profile.model_dump(mode="json", exclude_none=False),
+                    }
+                    for name, profile in self.benchmark_profiles.items()
+                },
                 "selections": {
                     name: self.benchmarks[name]["selection"] for name in self.benchmarks
                 },
@@ -394,6 +427,9 @@ class CampaignController:
                     "campaign_id": self.plan.campaign_id,
                     "cell": cell.__dict__,
                     "profile_digest": cell.profile_digest,
+                    "benchmark_profile_digest": self.benchmarks[cell.benchmark][
+                        "profile_digest"
+                    ],
                 },
             )
 
@@ -506,6 +542,7 @@ class CampaignController:
         state = dict(self.lock.get("server") or {"datasets": {}, "cells": {}})
         state.setdefault("datasets", {})
         state.setdefault("cells", {})
+        state = await self._validated_server_state(sink, state)
         for benchmark, tasks in self.tasks.items():
             if benchmark not in state["datasets"]:
                 name = f"a2e-{self.plan.campaign_id}-{benchmark}"
@@ -533,6 +570,9 @@ class CampaignController:
                 "model_profile": cell.model,
                 "model_profile_digest": cell.profile_digest,
                 "benchmark": cell.benchmark,
+                "benchmark_profile_digest": self.benchmarks[cell.benchmark][
+                    "profile_digest"
+                ],
                 "harness": cell.harness,
                 "sample": self.benchmarks[cell.benchmark]["selection"],
             }
@@ -552,6 +592,50 @@ class CampaignController:
             self.run_directory.update_lock({"server": state})
         self.lock["server"] = state
         return state
+
+    async def _validated_server_state(
+        self,
+        sink: A2ESink,
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Discard Server IDs that belong to a different or reset database."""
+        assert self.plan is not None
+        datasets = dict(state.get("datasets") or {})
+        cells = dict(state.get("cells") or {})
+        try:
+            for benchmark, locked in datasets.items():
+                if benchmark not in self.tasks:
+                    raise KeyError(benchmark)
+                if not await sink.locked_dataset_exists(
+                    dataset_id=str(locked["id"]),
+                    version_id=str(locked["version_id"]),
+                    expected_examples={
+                        str(task_id): str(example_id)
+                        for task_id, example_id in dict(locked["examples"]).items()
+                    },
+                ):
+                    raise LookupError(f"dataset {benchmark!r} is missing or changed")
+
+            cells_by_id = {cell.cell_id: cell for cell in self.plan.cells}
+            for cell_id, locked in cells.items():
+                cell = cells_by_id[cell_id]
+                dataset = datasets[cell.benchmark]
+                if not await sink.locked_experiment_exists(
+                    dataset_id=str(dataset["id"]),
+                    campaign_id=self.plan.campaign_id,
+                    cell_id=cell_id,
+                    experiment_id=str(locked["experiment_id"]),
+                ):
+                    raise LookupError(
+                        f"experiment for Cell {cell_id!r} is missing or changed"
+                    )
+        except (KeyError, LookupError, TypeError, ValueError) as exc:
+            logger.warning("resetting stale Campaign Server IDs: %s", exc)
+            state = {"datasets": {}, "cells": {}}
+            self.run_directory.update_lock({"server": state})
+            self.lock["server"] = state
+            return state
+        return {"datasets": datasets, "cells": cells}
 
     async def _upload_one(
         self, sink: A2ESink, state: dict[str, Any], result: TrialResult
@@ -826,7 +910,9 @@ class CampaignController:
                         "project_name": server_state["cells"][cell.cell_id]["project_name"],
                         "otel_endpoint": os.environ.get("A2E_COLLECTOR_ENDPOINT"),
                         "attempt": attempt,
-                        "timeout_seconds": self.config.execution.timeout_seconds,
+                        "timeout_seconds": self.benchmarks[cell.benchmark].get(
+                            "timeout_seconds"
+                        ),
                     }
                     isolated = bool(AGENTS[cell.harness].get("isolated"))
                     python = (
@@ -875,9 +961,10 @@ class CampaignController:
                             # The child enforces the configured task timeout.
                             # Add cleanup grace so it can emit a typed result.
                             timeout_seconds=(
-                                self.config.execution.timeout_seconds
+                                self.benchmarks[cell.benchmark]["timeout_seconds"]
                                 + self.config.execution.cancellation_grace_seconds
-                                if self.config.execution.timeout_seconds is not None
+                                if self.benchmarks[cell.benchmark].get("timeout_seconds")
+                                is not None
                                 else None
                             ),
                         )
@@ -1137,7 +1224,9 @@ class CampaignController:
                     "tasks_by_id": {
                         item["task_id"]: item for item in self.tasks[cell.benchmark]
                     },
-                    "timeout_seconds": self.config.execution.timeout_seconds,
+                    "timeout_seconds": self.benchmarks[cell.benchmark].get(
+                        "timeout_seconds"
+                    ),
                     "isolated": bool(AGENTS[cell.harness].get("isolated")),
                     "isolated_python": str(
                         self.repo_root / "task/agents/autogen_agentchat/.venv/bin/python"

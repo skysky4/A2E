@@ -7,8 +7,8 @@ from ageneval.task.core.dataset import TaskInput
 from ageneval.task.core.result import TaskTrace, ToolCall
 from ageneval.task.datasets.tau_bench.session import TauOfficialSession
 from ageneval.task.datasets.tau_bench.user_sim import (
-    NaiveUserSimulationEnv,
     STOP_TOKEN,
+    NaiveUserSimulationEnv,
 )
 
 
@@ -82,3 +82,25 @@ def test_stop_token_ends_without_running_inner(monkeypatch) -> None:
     assert inner.calls == 0
     assert trace.turns == 0
     assert STOP_TOKEN in (trace.final_answer or "")
+
+
+def test_user_simulator_failure_is_not_silently_downgraded(monkeypatch) -> None:
+    class _BrokenUser:
+        def reset(self, instruction: str | None = None) -> str:
+            raise RuntimeError("unsupported user model")
+
+    import ageneval.task.datasets.tau_bench.session as session_module
+
+    monkeypatch.setattr(session_module, "load_user", lambda strategy=None, model=None: _BrokenUser())
+    trace = asyncio.run(
+        TauOfficialSession(
+            _PlanThenAct(),
+            user_strategy="llm",
+            user_model="deepseek-v4-flash",
+            user_error_policy="fail",
+        ).run(TaskInput(task_id="retail-1", instruction="Cancel my order."))
+    )
+
+    assert trace.status == "error"
+    assert trace.turns == 0
+    assert "unsupported user model" in (trace.error or "")

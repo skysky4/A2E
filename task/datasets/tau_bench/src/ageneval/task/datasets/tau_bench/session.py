@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any
 
 from ageneval.task.core.agent import AgentRunner
 from ageneval.task.core.dataset import TaskInput
@@ -44,18 +43,46 @@ _LOOKUP_TOOLS = {
 }
 
 
-def wrap_tau_official_session(agent: AgentRunner) -> AgentRunner:
+def wrap_tau_official_session(
+    agent: AgentRunner,
+    *,
+    user_strategy: str | None = None,
+    user_model: str | None = None,
+    user_error_policy: str = "fail",
+    max_responds: int | None = None,
+) -> AgentRunner:
     if isinstance(agent, TauOfficialSession):
         return agent
-    return TauOfficialSession(inner=agent)
+    return TauOfficialSession(
+        inner=agent,
+        user_strategy=user_strategy,
+        user_model=user_model,
+        user_error_policy=user_error_policy,
+        max_responds=max_responds,
+    )
 
 
 class TauOfficialSession(AgentRunner):
     """Run one user-sim conversation by reusing the same agent and task state."""
 
-    def __init__(self, inner: AgentRunner, *, user_strategy: str | None = None) -> None:
+    def __init__(
+        self,
+        inner: AgentRunner,
+        *,
+        user_strategy: str | None = None,
+        user_model: str | None = None,
+        user_error_policy: str = "fail",
+        max_responds: int | None = None,
+    ) -> None:
+        if user_error_policy not in {"fail", "fallback_naive"}:
+            raise ValueError("user_error_policy must be 'fail' or 'fallback_naive'")
+        if max_responds is not None and max_responds < 1:
+            raise ValueError("max_responds must be positive")
         self.inner = inner
         self.user_strategy = user_strategy
+        self.user_model = user_model
+        self.user_error_policy = user_error_policy
+        self.max_responds = max_responds or _max_responds()
         self.name = getattr(inner, "name", "tau-session")
         self.binding = getattr(inner, "binding", None)
 
@@ -64,13 +91,17 @@ class TauOfficialSession(AgentRunner):
         state = task.initial_state
         if not isinstance(state, dict):
             state = dict(state or {})
-        user = load_user(self.user_strategy)
+        user = (
+            load_user(self.user_strategy, self.user_model)
+            if self.user_model
+            else load_user(self.user_strategy)
+        )
         try:
             opening = user.reset((task.instruction or "").strip())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             from ageneval.task.datasets.tau_bench.user_sim import NaiveUserSimulationEnv
 
-            if isinstance(user, NaiveUserSimulationEnv):
+            if isinstance(user, NaiveUserSimulationEnv) or self.user_error_policy == "fail":
                 return TaskTrace(
                     task_id=task.task_id,
                     agent_name=self.name,
@@ -104,7 +135,7 @@ class TauOfficialSession(AgentRunner):
         error: str | None = None
         status = "ok"
 
-        for respond_index in range(_max_responds()):
+        for respond_index in range(self.max_responds):
             inner_task = TaskInput(
                 task_id=task.task_id,
                 instruction=_agent_visible(transcript),
@@ -113,7 +144,7 @@ class TauOfficialSession(AgentRunner):
             )
             try:
                 trace = await self.inner.run(inner_task)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 error = str(exc)[:1000]
                 status = "error"
                 break
@@ -161,7 +192,11 @@ class TauOfficialSession(AgentRunner):
             if _has_successful_write(tools):
                 try:
                     next_user = user.step(text)
-                except Exception:  # noqa: BLE001
+                except Exception as exc:
+                    if self.user_error_policy == "fail":
+                        error = f"tau user simulator step failed: {exc}"[:1000]
+                        status = "error"
+                        break
                     next_user = STOP_TOKEN
                 if STOP_TOKEN in (next_user or "") or not (next_user or "").strip():
                     break
@@ -190,7 +225,7 @@ class TauOfficialSession(AgentRunner):
 
             try:
                 next_user = (user.step(text) or "").strip()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 error = f"tau user simulator step failed: {exc}"[:1000]
                 status = "error"
                 break
@@ -204,7 +239,7 @@ class TauOfficialSession(AgentRunner):
                 else:
                     break
             transcript.append(("customer", next_user))
-            if respond_index == _max_responds() - 1:
+            if respond_index == self.max_responds - 1:
                 status = "max_turns"
 
         from ageneval.task.datasets.tau_bench.reward import data_hash
@@ -221,6 +256,8 @@ class TauOfficialSession(AgentRunner):
             error=error,
             raw={
                 "tau_user_strategy": type(user).__name__,
+                "tau_user_model": self.user_model,
+                "tau_user_error_policy": self.user_error_policy,
                 "tau_responds": sum(1 for role, _ in transcript if role == "customer"),
                 "tau_hidden_instruction": True,
                 "tau_write": _has_successful_write(tools),
@@ -262,7 +299,7 @@ def _tool_line(tool_call: ToolCall) -> str:
     args = tool_call.arguments if isinstance(tool_call.arguments, dict) else {}
     try:
         rendered_args = ", ".join(f"{key}={args[key]!r}" for key in list(args)[:8])
-    except Exception:  # noqa: BLE001
+    except Exception:
         rendered_args = str(args)[:200]
     if tool_call.result is None:
         result = ""

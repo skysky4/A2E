@@ -1,0 +1,13 @@
+schema_version: 1
+id: persistbench
+kind: qa
+loader:
+  entrypoint: ageneval.task.datasets.persistbench.loader:load_persistbench_tasks
+  accepts: [split, n]
+binding:
+  entrypoint: ageneval.task.datasets.persistbench.binding:build_persistbench_binding
+grader:
+  entrypoint: ageneval.task.datasets.persistbench.grader:GRADER
+defaults: {max_turns: 8, max_tokens: 4096, llm_timeout: 180, run_deadline: 1800}
+agent_overrides: {max_turns: 8, max_steps: 8}
+resources: {docker: false, network: false}

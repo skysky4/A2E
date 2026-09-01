@@ -354,9 +354,8 @@ def main() -> int:
         args.api_key = runtime_model.api_key.get_secret_value()
 
     # 1. Load the full candidate split, then select this run's exact sample.
-    # Passing n=None avoids every loader's legacy first-N truncation. Explicit
-    # sandbox pins (A2E_SWE_INSTANCE / A2E_SWE_PRO_INSTANCE / A2E_TB2_TASK /
-    # AEP_TB21_TASK) still win inside the registry wrappers.
+    # Passing n=None avoids every loader's legacy first-N truncation. Campaigns
+    # pin sandbox tasks explicitly through benchmark.sample.task_ids.
     ds_entry = DATASETS[args.dataset]
     grader_spec = grader_for_dataset(args.dataset)
     settings = resolve_run_settings(

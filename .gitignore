@@ -53,6 +53,9 @@ ui/dist/
 .a2e-*
 task/runs/*
 !task/runs/.gitkeep
+# Campaign files are local experiment inputs. Keep only the public example.
+task/campaigns/*
+!task/campaigns/example.yaml
 *.db
 *.db-shm
 *.db-wal

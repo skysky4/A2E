@@ -19,6 +19,54 @@ class A2ESink:
     async def close(self) -> None:
         await self.client._client.aclose()
 
+    async def locked_dataset_exists(
+        self,
+        *,
+        dataset_id: str,
+        version_id: str,
+        expected_examples: dict[str, str],
+    ) -> bool:
+        """Return whether one locked dataset mapping exists on this Server."""
+        try:
+            dataset = await self.client.datasets.get_dataset(
+                dataset=dataset_id,
+                version_id=version_id,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {404, 422}:
+                return False
+            raise
+        actual_examples = {
+            str(example.get("metadata", {}).get("task_id")): str(example["id"])
+            for example in dataset.examples
+        }
+        return (
+            str(dataset.id) == dataset_id
+            and str(dataset.version_id) == version_id
+            and actual_examples == expected_examples
+        )
+
+    async def locked_experiment_exists(
+        self,
+        *,
+        dataset_id: str,
+        campaign_id: str,
+        cell_id: str,
+        experiment_id: str,
+    ) -> bool:
+        """Return whether one locked Cell experiment exists on this Server."""
+        try:
+            found = await self._find_experiment(
+                dataset_id=dataset_id,
+                campaign_id=campaign_id,
+                cell_id=cell_id,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {404, 422}:
+                return False
+            raise
+        return found is not None and str(found.get("id")) == experiment_id
+
     async def ensure_dataset(
         self,
         *,

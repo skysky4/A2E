@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import httpx
 from ageneval.task.orchestrator.schema import GradeResult, TrialResult
@@ -18,6 +19,32 @@ def _sink(handler) -> A2ESink:
         )
     )
     return sink
+
+
+def test_locked_dataset_mapping_must_match_current_server() -> None:
+    class Datasets:
+        async def get_dataset(self, **_kwargs):
+            return SimpleNamespace(
+                id="dataset-1",
+                version_id="version-1",
+                examples=[{"id": "example-1", "metadata": {"task_id": "task-1"}}],
+            )
+
+    async def scenario() -> None:
+        sink = A2ESink.__new__(A2ESink)
+        sink.client = SimpleNamespace(datasets=Datasets())
+        assert await sink.locked_dataset_exists(
+            dataset_id="dataset-1",
+            version_id="version-1",
+            expected_examples={"task-1": "example-1"},
+        )
+        assert not await sink.locked_dataset_exists(
+            dataset_id="dataset-1",
+            version_id="version-1",
+            expected_examples={"task-1": "stale-example"},
+        )
+
+    asyncio.run(scenario())
 
 
 def test_experiment_recovery_uses_stable_metadata() -> None:

@@ -1,0 +1,9 @@
+schema_version: 1
+id: commonsenseqa
+kind: qa
+loader: {entrypoint: "ageneval.task.datasets.qa_suite.loader:load_qa_tasks", defaults: {benchmark: commonsenseqa}, accepts: [benchmark, n, split]}
+binding: {entrypoint: "ageneval.task.datasets.qa_suite.binding:build_qa_binding", defaults: {benchmark: commonsenseqa}}
+grader: {entrypoint: "ageneval.task.datasets.qa_suite.grader:grader_for_benchmark", defaults: {benchmark: commonsenseqa}}
+defaults: {max_turns: 8, max_tokens: 4096, llm_timeout: 180, run_deadline: 1800}
+agent_overrides: {max_turns: 8, max_steps: 8}
+resources: {docker: false, network: false}
