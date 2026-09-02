@@ -1,0 +1,21 @@
+schema_version: 1
+id: deepseek-v4-pro
+provider: openai-compatible
+model: deepseek-v4-pro
+upstream_protocol: openai_chat_completions
+connection:
+  base_url_env: OPENAI_API_BASE
+  api_key_env: OPENAI_API_KEY
+capabilities:
+  tools: true
+  streaming: true
+  vision: false
+  structured_output: false
+concurrency:
+  group: deepseek-v4-pro
+  max_sessions: 16
+gateway:
+  interfaces:
+    - openai_chat_completions
+    - anthropic_messages
+middleware: []
