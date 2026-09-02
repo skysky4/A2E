@@ -103,7 +103,7 @@ export function dbAgentFromExperiment(exp: ExperimentSummary): AgentInfo | null 
   const label = names[0];
   if (!label) return null;
   return {
-    id: normId(label) || `experiment-${exp.id}`,
+    id: normId(label) || label.toLocaleLowerCase(),
     label,
     aliases: names.slice(1),
   };

@@ -3,13 +3,8 @@ import { getExperimentContext, getExperimentJson } from "../api/experiments";
 import type { AgentInfo, ExperimentContext, ExperimentRecord, ExperimentSummary } from "../api/types";
 import { benchmarksFromExperiments, benchExperiments, benchKey, normKey, type Benchmark } from "../data/benchmarks";
 import { useDeck } from "../hooks/useDeck";
-import {
-  agentsForExperiments,
-  defaultSelection,
-  experimentsForAgent,
-  hasEvaluationResults,
-  newestExperimentsFirst,
-} from "../utils/eval";
+import { defaultSelection } from "../utils/eval";
+import { applyModelPricing } from "../utils/pricing";
 import {
   dbAgentFromExperiment,
   dbJudgeModelNamesForSelection,
@@ -22,14 +17,15 @@ import { TracePanel } from "./TracePanel";
 
 interface Props {
   experiments: ExperimentSummary[];
+  onBack: () => void;
 }
 
 function formatRunTime(value?: string): string {
   if (!value) return "unknown time";
-  return String(value).replace("T", " ").replace(/\.\d+Z?$/, "").replace(/Z$/, "").slice(0, 19);
+  return String(value).replace("T", " ").replace(/\.\d+Z?$/, "").replace(/Z$/, "").slice(0, 16);
 }
 
-export function Deck({ experiments }: Props) {
+export function Deck({ experiments, onBack }: Props) {
   const { deckRef, segRef, trackRef, activePanel, setPanel, panels } = useDeck();
   const benchmarks = useMemo(() => benchmarksFromExperiments(experiments), [experiments]);
   const [selectedBench, setSelectedBench] = useState<Benchmark | null>(null);
@@ -40,151 +36,62 @@ export function Deck({ experiments }: Props) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [activeSample, setActiveSample] = useState(0);
-  const [selectionLoading, setSelectionLoading] = useState(false);
-  const [runScanLoading, setRunScanLoading] = useState(false);
-  const [evaluatedRuns, setEvaluatedRuns] = useState<ExperimentSummary[]>([]);
   const bootedRef = useRef(false);
-  const selectionRequestRef = useRef(0);
-  const runScanRequestRef = useRef(0);
-  const recordsCacheRef = useRef(new Map<string, ExperimentRecord[]>());
-  const recordsRequestRef = useRef(new Map<string, Promise<ExperimentRecord[]>>());
-
-  const benchmarkExperiments = useMemo(() => {
-    return selectedBench ? benchExperiments(selectedBench, experiments) : [];
-  }, [experiments, selectedBench]);
 
   const agentOptions = useMemo(() => {
-    const available = agentsForExperiments(benchmarkExperiments);
-    if (!selectedAgent || available.some((agent) => agent.id === selectedAgent.id)) {
-      return available;
+    if (!selectedBench) return [];
+    const unique = new Map<string, { exp: ExperimentSummary; agent: AgentInfo }>();
+    for (const exp of benchExperiments(selectedBench, experiments)) {
+      const agent = dbAgentFromExperiment(exp);
+      if (agent && !unique.has(agent.id)) unique.set(agent.id, { exp, agent });
     }
-    // Keep a manually selected agent visible even when the newly selected
-    // benchmark has no run for it. Only the Agent wheel may change the agent.
-    return [selectedAgent, ...available];
-  }, [benchmarkExperiments, selectedAgent]);
+    return [...unique.values()];
+  }, [experiments, selectedBench]);
 
-  const agentRunCandidates = useMemo(
-    () => newestExperimentsFirst(experimentsForAgent(benchmarkExperiments, selectedAgent)),
-    [benchmarkExperiments, selectedAgent],
-  );
-
-  const runOptions = useMemo(
-    () =>
-      evaluatedRuns.map((exp) => ({
+  const runOptions = useMemo(() => {
+    if (!selectedBench || !selectedAgent) return [];
+    const newestFirst = benchExperiments(selectedBench, experiments).filter((exp) => {
+      const agent = dbAgentFromExperiment(exp);
+      return agent?.id === selectedAgent.id;
+    });
+    return [...newestFirst]
+      .sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")))
+      .map((exp) => ({
         exp,
+        agent: dbAgentFromExperiment(exp),
         label: formatRunTime(exp.created_at),
-      })),
-    [evaluatedRuns],
-  );
+      }));
+  }, [experiments, selectedBench, selectedAgent]);
 
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(""), 1800);
   };
 
-  const getExperimentRecords = useCallback((experimentId: string) => {
-    const cached = recordsCacheRef.current.get(experimentId);
-    if (cached) return Promise.resolve(cached);
-
-    const pending = recordsRequestRef.current.get(experimentId);
-    if (pending) return pending;
-
-    const request = getExperimentJson(experimentId)
-      .then((nextRecords) => {
-        recordsCacheRef.current.set(experimentId, nextRecords);
-        return nextRecords;
-      })
-      .finally(() => {
-        recordsRequestRef.current.delete(experimentId);
-      });
-    recordsRequestRef.current.set(experimentId, request);
-    return request;
-  }, []);
-
   const handleSelect = useCallback(
     async (b: Benchmark, exp: ExperimentSummary, agent: AgentInfo | null, navigate = true) => {
-      const requestId = ++selectionRequestRef.current;
-      const dbAgent = dbAgentFromExperiment(exp) ?? agent;
-
-      // Commit the selector state immediately and clear the previous payload.
-      // This keeps Agent, Run, Trace and Eval on the same experiment while the
-      // new experiment is loading instead of showing the previous payload.
-      setSelectedBench(b);
-      setSelectedExp(exp);
-      setRecords([]);
-      setContext(null);
-      setSelectedKey(normKey(benchKey(b)));
-      setActiveSample(0);
-      setSelectionLoading(true);
-      if (navigate) setPanel(1);
-      showToast(`Loading ${b.name}${dbAgent ? ` · ${dbAgent.label}` : ""} …`);
-
+      showToast(`Loading ${b.name}${agent ? ` · ${agent.label}` : ""} …`);
       try {
-        const recs = await getExperimentRecords(exp.id);
-        if (requestId !== selectionRequestRef.current) return;
-        if (!hasEvaluationResults(recs)) {
-          setEvaluatedRuns((current) => current.filter((run) => run.id !== exp.id));
-          setSelectedExp(null);
-          showToast(`${b.name}: This run has no evaluation results`);
+        const recs = await getExperimentJson(exp.id);
+        if (!recs.length) {
+          showToast(`${b.name}: No samples`);
           return;
         }
-
-        // Trace data is already usable here. Context is supplementary and
-        // must not prevent a valid run from appearing if its request fails.
-        setRecords(recs);
-        setSelectionLoading(false);
         const fullCtx = await getExperimentContext(exp.id, recs);
-        if (requestId !== selectionRequestRef.current) return;
+        const testedModel = dbTestedAgentModelNamesForSelection(exp, fullCtx, recs)[0];
+        const pricedRecords = applyModelPricing(recs, testedModel);
+        const dbAgent = agent ?? dbAgentFromExperiment(exp);
+        setSelectedBench(b);
+        setSelectedExp(exp);
+        setSelectedAgent(dbAgent);
+        setRecords(pricedRecords);
         setContext(fullCtx);
+        setSelectedKey(normKey(benchKey(b)));
+        setActiveSample(0);
+        if (navigate) setPanel(1);
       } catch (e) {
-        if (requestId === selectionRequestRef.current) {
-          showToast(`Failed to load: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      } finally {
-        if (requestId === selectionRequestRef.current) setSelectionLoading(false);
+        showToast(`Load failed: ${e instanceof Error ? e.message : String(e)}`);
       }
-    },
-    [getExperimentRecords, setPanel],
-  );
-
-  const handleAgentChange = useCallback(
-    (agent: AgentInfo) => {
-      if (!selectedBench) return;
-      if (agent.id === selectedAgent?.id) return;
-      selectionRequestRef.current += 1;
-      runScanRequestRef.current += 1;
-      setSelectedAgent(agent);
-      setSelectedExp(null);
-      setRecords([]);
-      setContext(null);
-      setEvaluatedRuns([]);
-      setActiveSample(0);
-      setSelectionLoading(false);
-      setRunScanLoading(true);
-    },
-    [selectedAgent?.id, selectedBench],
-  );
-
-  const handleBenchmarkChange = useCallback(
-    (
-      benchmark: Benchmark,
-      fallbackExperiment: ExperimentSummary,
-      fallbackAgent: AgentInfo | null,
-      navigate = true,
-    ) => {
-      selectionRequestRef.current += 1;
-      runScanRequestRef.current += 1;
-      setSelectedBench(benchmark);
-      setSelectedExp(null);
-      setSelectedAgent((current) => current ?? fallbackAgent ?? dbAgentFromExperiment(fallbackExperiment));
-      setRecords([]);
-      setContext(null);
-      setEvaluatedRuns([]);
-      setSelectedKey(normKey(benchKey(benchmark)));
-      setActiveSample(0);
-      setSelectionLoading(false);
-      setRunScanLoading(true);
-      if (navigate) setPanel(1);
     },
     [setPanel],
   );
@@ -193,39 +100,8 @@ export function Deck({ experiments }: Props) {
     if (bootedRef.current || !experiments.length) return;
     bootedRef.current = true;
     const sel = defaultSelection(experiments, benchmarks);
-    if (sel) handleBenchmarkChange(sel.b, sel.exp, sel.agent, false);
-  }, [experiments, benchmarks, handleBenchmarkChange]);
-
-  useEffect(() => {
-    const requestId = ++runScanRequestRef.current;
-    if (!selectedBench || !selectedAgent || !agentRunCandidates.length) {
-      setEvaluatedRuns([]);
-      setRunScanLoading(false);
-      return;
-    }
-
-    setRunScanLoading(true);
-    void Promise.all(
-      agentRunCandidates.map(async (experiment) => {
-        try {
-          const experimentRecords = await getExperimentRecords(experiment.id);
-          return hasEvaluationResults(experimentRecords) ? experiment : null;
-        } catch {
-          return null;
-        }
-      }),
-    ).then((results) => {
-      if (requestId !== runScanRequestRef.current) return;
-      const nextRuns = results.filter((experiment): experiment is ExperimentSummary => Boolean(experiment));
-      setEvaluatedRuns(nextRuns);
-      setRunScanLoading(false);
-
-      const nextExperiment = nextRuns[0];
-      if (nextExperiment) {
-        void handleSelect(selectedBench, nextExperiment, selectedAgent, false);
-      }
-    });
-  }, [agentRunCandidates, getExperimentRecords, handleSelect, selectedAgent, selectedBench]);
+    if (sel) void handleSelect(sel.b, sel.exp, sel.agent, false);
+  }, [experiments, benchmarks, handleSelect]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -246,24 +122,27 @@ export function Deck({ experiments }: Props) {
     <>
       <header className="topbar">
         <div className="topbar-inner">
-          {selectedBench ? (
+          <button type="button" className="topbar-home" onClick={onBack}>
+            <span aria-hidden="true">←</span>
+            Home
+          </button>
+          {selectedBench && records.length > 0 ? (
             <TraceControls
               benchmark={selectedBench}
               runOptions={runOptions}
               agentOptions={agentOptions}
               selectedAgent={selectedAgent}
               selectedExperimentId={selectedExp?.id}
-              onRunChange={(exp) =>
-                handleSelect(selectedBench, exp, dbAgentFromExperiment(exp), false)
-              }
-              onAgentChange={handleAgentChange}
+              onRunChange={(exp) => handleSelect(selectedBench, exp, selectedAgent, false)}
+              onAgentChange={(exp, agent) => handleSelect(selectedBench, exp, agent, false)}
             />
           ) : null}
-          <div className="counter lab-logo" data-sample={records.length ? `${activeSample + 1}/${records.length}` : ""}>
-            <img src={`${window.Config?.basename ?? ""}/ailab-logo.png`} alt="" />
+          <div className="topbar-brand">
+            <span>OpenCompass</span>
+            <strong>A²E: Agent Auditing Engine</strong>
           </div>
         </div>
-        <nav className="segmented" ref={segRef} aria-label="Switch view">
+        <nav className="segmented" ref={segRef} aria-label="View switcher">
           <div className="seg-track" ref={trackRef}>
             {panels.map((label, i) => (
               <button
@@ -285,24 +164,13 @@ export function Deck({ experiments }: Props) {
           benchmarks={benchmarks}
           experiments={experiments}
           selectedKey={selectedKey}
-          onSelect={handleBenchmarkChange}
+          onSelect={(b, exp, agent) => handleSelect(b, exp, agent)}
           onToast={showToast}
         />
         <TracePanel
           records={records}
           benchmarkName={selectedBench?.name ?? null}
           projectName={selectedExp?.project_name ?? context?.experiment?.project_name}
-          emptyMessage={
-            runScanLoading
-              ? "Checking evaluated runs…"
-              : selectionLoading
-              ? "Loading the selected evaluation…"
-              : selectedExp
-                ? "No samples for the selected run"
-                : selectedAgent
-                  ? "No evaluated runs for the selected agent"
-                  : undefined
-          }
           activeSample={activeSample}
           onActiveSampleChange={setActiveSample}
           onGoTask={() => setPanel(0)}
@@ -317,7 +185,6 @@ export function Deck({ experiments }: Props) {
           projectName={selectedExp?.project_name}
           testedAgentModel={dbTestedAgentModelNamesForSelection(selectedExp, context, records).join(", ")}
           judgeModel={dbJudgeModelNamesForSelection(selectedExp, context, records).join(", ")}
-          loading={runScanLoading || selectionLoading}
         />
       </main>
 

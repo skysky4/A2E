@@ -13,7 +13,6 @@ import {
 interface DatasetRow {
   id: string;
   name?: string;
-  metadata?: Record<string, unknown>;
 }
 
 interface ExperimentRow {
@@ -67,7 +66,6 @@ export async function listExperiments(): Promise<ExperimentSummary[]> {
         failed_run_count: exp.failed_run_count,
         project_name: exp.project_name,
         metadata: exp.metadata,
-        dataset_metadata: ds.metadata,
       });
     }
   }

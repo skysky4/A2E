@@ -177,23 +177,10 @@ export function kindColor(kind?: string): string {
   return (KIND[k] ?? KIND.UNKNOWN).c;
 }
 
-export function displaySpanKind(span: SpanNode): string {
-  const rawKind = String(span.span_kind || "UNKNOWN").toUpperCase();
-  if (rawKind !== "UNKNOWN") return rawKind;
-
-  // Some agent SDKs emit lifecycle/invocation spans without a semantic kind.
-  // Preserve those real spans, but classify the unambiguous agent operations
-  // instead of exposing the collector's gray UNKNOWN placeholder in the UI.
-  const name = String(span.name || "").toLowerCase();
-  if (/\b(?:create|invoke)_agent\b|\bagent\b/.test(name)) return "AGENT";
-  return "UNKNOWN";
-}
-
 export function kindSummary(spans: SpanNode[]): string {
   const counts: Record<string, number> = {};
   spans.forEach((s) => {
-    const k = displaySpanKind(s);
-    if (k === "UNKNOWN") return;
+    const k = String(s.span_kind || "UNKNOWN").toUpperCase();
     counts[k] = (counts[k] || 0) + 1;
   });
   return Object.entries(counts)

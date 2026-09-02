@@ -1,12 +1,11 @@
 import { useState } from "react";
 import type { SpanNode } from "../api/types";
-import { esc, pretty } from "../utils/format";
+import { prettyReadable } from "../utils/format";
 import {
   INDENT,
   attrValue,
   buildTree,
   collectMessages,
-  displaySpanKind,
   expandCompactTraceSpans,
   fmtMs,
   isTraceRootNode,
@@ -35,8 +34,8 @@ function SpanDetail({ span }: { span: SpanNode }) {
           <p className="card-label">Input messages</p>
           {inMsgs.map((m, i) => (
             <div key={i} className="msg">
-              <div className="msg-role">{esc(m.role || "message")}</div>
-              <div className="msg-content">{esc(trunc(String(m.content ?? pretty(m))))}</div>
+              <div className="msg-role">{m.role || "message"}</div>
+              <div className="msg-content">{trunc(prettyReadable(m.content ?? m))}</div>
             </div>
           ))}
         </div>
@@ -46,8 +45,8 @@ function SpanDetail({ span }: { span: SpanNode }) {
           <p className="card-label">Output messages</p>
           {outMsgs.map((m, i) => (
             <div key={i} className="msg">
-              <div className="msg-role">{esc(m.role || "message")}</div>
-              <div className="msg-content">{esc(trunc(String(m.content ?? pretty(m))))}</div>
+              <div className="msg-role">{m.role || "message"}</div>
+              <div className="msg-content">{trunc(prettyReadable(m.content ?? m))}</div>
             </div>
           ))}
         </div>
@@ -57,13 +56,13 @@ function SpanDetail({ span }: { span: SpanNode }) {
           {inp != null ? (
             <div className="detail-sec">
               <p className="card-label">Input</p>
-              <pre className="json">{esc(trunc(pretty(inp)))}</pre>
+              <pre className="json">{trunc(prettyReadable(inp))}</pre>
             </div>
           ) : null}
           {outp != null ? (
             <div className="detail-sec">
               <p className="card-label">Output</p>
-              <pre className="json">{esc(trunc(pretty(outp)))}</pre>
+              <pre className="json">{trunc(prettyReadable(outp))}</pre>
             </div>
           ) : null}
         </>
@@ -71,7 +70,7 @@ function SpanDetail({ span }: { span: SpanNode }) {
       <div className="detail-sec">
         <details className="raw">
           <summary>All attributes</summary>
-          <pre className="json">{esc(pretty(a))}</pre>
+          <pre className="json">{prettyReadable(a)}</pre>
         </details>
       </div>
     </div>
@@ -101,7 +100,7 @@ function TraceNodeRow({
   const durMs = Math.max(0, node.rangeEnd - node.rangeStart);
   const offPct = ((node.rangeStart - t0) / total) * 100;
   const widPct = Math.max(1.5, (durMs / total) * 100);
-  const kind = displaySpanKind(s);
+  const kind = (s.span_kind || "UNKNOWN").toUpperCase();
   const color = kindColor(kind);
   const isErr = String(s.status_code).toUpperCase() === "ERROR";
   const hasKids = node.children.length > 0;
@@ -127,7 +126,7 @@ function TraceNodeRow({
         </div>
         <div className="trace-node-body">
           <div className="trace-node-top">
-            {kind !== "UNKNOWN" ? <span className="trace-kind">{kind}</span> : null}
+            <span className="trace-kind">{kind}</span>
             <span className="trace-node-name">{s.name || "span"}</span>
           </div>
         </div>
@@ -245,7 +244,7 @@ function GlobalTraceAxis({ spans, t0, total }: { spans: SpanNode[]; t0: number; 
       </div>
       <div className="trace-global-track">
         {timed.map((item) => {
-          const kind = displaySpanKind(item.span);
+          const kind = String(item.span.span_kind || "UNKNOWN").toUpperCase();
           const left = Math.max(0, Math.min(100, ((item.start - t0) / total) * 100));
           const right = Math.max(left, Math.min(100, ((item.end - t0) / total) * 100));
           const width = Math.max(0.35, right - left);
@@ -253,7 +252,7 @@ function GlobalTraceAxis({ spans, t0, total }: { spans: SpanNode[]; t0: number; 
             <span
               key={item.id}
               className="trace-global-seg"
-              title={`${kind !== "UNKNOWN" ? `${kind} · ` : ""}${item.span.name || "span"} · ${fmtMs(item.end - item.start)}`}
+              title={`${kind} · ${item.span.name || "span"} · ${fmtMs(item.end - item.start)}`}
               style={{
                 left: `${left}%`,
                 width: `${width}%`,
@@ -274,14 +273,12 @@ export function SpanTree({ spans }: { spans: SpanNode[] }) {
   if (!realVisible.length) return <p className="muted">No trace available</p>;
   const { roots, t0, total } = buildTree(visible);
   const syntheticCount = Math.max(0, visible.length - realVisible.length);
-  const summary = kindSummary(realVisible);
   return (
     <div className="trace-flow">
       <div className="trace-flow-head">
         <div className="trace-flow-title">Agent Run</div>
         <div className="trace-flow-sub">
-          {realVisible.length} spans{syntheticCount ? ` · ${syntheticCount} message nodes` : ""} · total {fmtMs(total)}
-          {summary ? ` · ${summary}` : ""}
+          {realVisible.length} spans{syntheticCount ? ` · ${syntheticCount} message nodes` : ""} · total {fmtMs(total)} · {kindSummary(realVisible)}
         </div>
       </div>
       <GlobalTraceAxis spans={realVisible} t0={t0} total={total} />

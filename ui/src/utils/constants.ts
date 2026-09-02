@@ -9,6 +9,7 @@ export const AGENT_FALLBACK: AgentInfo[] = [
   { id: "claude-agent-sdk", label: "Claude SDK", aliases: ["claude-sdk", "claude_sdk", "claudesdk"] },
   { id: "crewai", label: "CrewAI" },
   { id: "google-adk", label: "Google ADK", aliases: ["google_adk"] },
+  { id: "hermes", label: "Hermes" },
   { id: "langchain", label: "LangChain / LangGraph", aliases: ["langgraph", "lang_chain"] },
   { id: "llama-index", label: "LlamaIndex", aliases: ["llama_index"] },
   { id: "openai", label: "OpenAI" },

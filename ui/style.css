@@ -2689,7 +2689,7 @@ body {
   margin-top: 2px;
 }
 
-/* ─────────────────── span tree (A2E-structured) ─────────────────── */
+/* ─────────────────── span tree (AE2-structured) ─────────────────── */
 .tree {
   --indent: 22px; /* NESTING_INDENT */
   list-style: none;
@@ -2731,7 +2731,7 @@ body {
   border-color: var(--red);
 }
 
-/* Compact trace flow: A2E-like node stream, restyled for ui */
+/* Compact trace flow: AE2-like node stream, restyled for ui */
 .trace-flow {
   display: flex;
   flex-direction: column;
