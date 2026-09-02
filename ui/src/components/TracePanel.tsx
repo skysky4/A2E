@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getTraceSpans } from "../api/spans";
+import { catalogMetricGroups } from "../api/metrics";
 import type { ExperimentRecord } from "../api/types";
 import { BraceBig } from "./BraceBig";
 import { SpanTree } from "./SpanTree";
 import { pretty } from "../utils/format";
-import { fmtMs, formatMetricValue, recordCost, recordTokenUsage } from "../utils/eval";
+import { annotationScore, fmtMs, formatMetricValue, recordCost, recordTokenUsage } from "../utils/eval";
 import { getMetricDescription, metricRangeClass } from "../utils/metricDescriptions";
 import { MetricTooltip } from "./MetricTooltip";
 
@@ -14,42 +15,12 @@ function statusPill(status: string) {
   return <span className={`pill status ${cls}`}>{s}</span>;
 }
 
-type TraceMetricGroupId = "efficiency" | "safety" | "accuracy";
-
-const TRACE_METRIC_GROUPS: Array<{ id: TraceMetricGroupId; label: string; metrics: string[] }> = [
-  {
-    id: "efficiency",
-    label: "Efficiency",
-    metrics: ["conciseness", "total_token_usage", "cost", "turn_count", "elapsed_time"],
-  },
-  {
-    id: "safety",
-    label: "Safety",
-    metrics: [
-      "hallucination",
-      "privacy_leakage",
-      "unauthorized_action",
-      "harmful_action",
-      "failure_transparency",
-      "prompt_injection_resilience",
-    ],
-  },
-  {
-    id: "accuracy",
-    label: "Correctness",
-    metrics: [
-      "correctness",
-      "task_succeeded",
-    ],
-  },
-];
+const TRACE_METRIC_GROUPS = catalogMetricGroups();
 
 function scoreForMetric(rec: ExperimentRecord, name: string): number | null {
   if (name === "total_token_usage") return recordTokenUsage(rec);
   if (name === "cost") return recordCost(rec);
-  const target = name.toLowerCase();
-  const score = (rec.annotations ?? []).find((a) => String(a.name).toLowerCase() === target)?.score;
-  return typeof score === "number" && Number.isFinite(score) ? score : null;
+  return annotationScore(rec, name);
 }
 
 function numericValue(value: unknown): number | null {
@@ -121,14 +92,18 @@ function SampleCard({
   const status = String(out.status ?? (rec.error ? "error" : "ok"));
   const instruction = String(input.instruction ?? input.question ?? pretty(input));
   const traceId = rec.trace_id || String(out.trace_id ?? "");
-  const turnValue = numericValue(out.turns);
-  const toolCallCount = Array.isArray(out.tool_calls) ? out.tool_calls.length : 0;
+  const turnValue = scoreForMetric(rec, "turn_count") ?? numericValue(out.turns);
+  const rawToolCallCount = Array.isArray(out.tool_calls_full)
+    ? out.tool_calls_full.length
+    : Array.isArray(out.tool_calls)
+      ? out.tool_calls.length
+      : 0;
+  const toolCallCount = scoreForMetric(rec, "tool_call_count") ?? rawToolCallCount;
   const latencyDescription = [
-    "- Meaning: End-to-end runtime duration for this sample.",
-    "- Source: rec.latency_ms from the run record.",
-    "- Display: formatted seconds or milliseconds; lower is usually better.",
+    "- End-to-end runtime for this sample.",
+    "- Lower is better.",
   ].join("\n");
-  const [metricGroup, setMetricGroup] = useState<TraceMetricGroupId>("efficiency");
+  const [metricGroup, setMetricGroup] = useState("correct");
   const selectedMetricGroup = TRACE_METRIC_GROUPS.find((group) => group.id === metricGroup) ?? TRACE_METRIC_GROUPS[0];
   const visibleScores = selectedMetricGroup.metrics
     .map((name) => [name, scoreForMetric(rec, name)] as const)

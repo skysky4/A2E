@@ -13,3 +13,18 @@ export function catalogGroupMetrics(group: string): string[] {
   }
   return [];
 }
+
+export function catalogMetricGroups(): Array<{ id: string; label: string; metrics: string[] }> {
+  const groups: Array<{ id: string; label: string; metrics: string[] }> = [];
+  const cats = getMetricsCatalog().categories ?? {};
+  for (const top of Object.values(cats)) {
+    for (const [id, group] of Object.entries(top.groups ?? {})) {
+      groups.push({
+        id,
+        label: group.label ?? id,
+        metrics: (group.metrics ?? []).map((metric) => metric.name),
+      });
+    }
+  }
+  return groups;
+}

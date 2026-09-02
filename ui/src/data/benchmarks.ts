@@ -1,4 +1,4 @@
-export const CATS = ["Coding", "Conversational", "Research", "Computer use"] as const;
+export const CATS = ["Coding", "Reasoning", "Research & Work", "Tool Use"] as const;
 export const CAPS = ["Skill", "Memory", "Tool"] as const;
 
 export type BenchDiff = "found" | "med" | "hard" | "front";
@@ -11,37 +11,34 @@ export interface Benchmark {
   diff: BenchDiff;
   dim?: number;
   key?: string;
+  aliases?: string[];
   experimentIds?: string[];
 }
 
 export const BENCHMARKS: Benchmark[] = [
-  { name: "HumanEval", cat: 0, year: "2021", diff: "found", key: "humaneval" },
+  { name: "HumanEval", cat: 0, year: "2021", diff: "found", key: "humaneval", aliases: ["human-eval"] },
   { name: "SWE-bench Lite", cat: 0, year: "2024", diff: "hard", dim: 2, key: "swe-bench-lite" },
   { name: "SWE-bench Verified", cat: 0, year: "2024", diff: "hard", dim: 2, key: "swe-bench-verified" },
   { name: "SWE-bench Pro", cat: 0, year: "2025", diff: "front", dim: 2, key: "swe-bench-pro" },
-  { name: "SkillsBench", year: "2026", date: "2026-02-13", diff: "front", dim: 0 },
-  { name: "SkillCraft", year: "2026", date: "2026-02-28", diff: "front", dim: 0 },
-  { name: "SWE-Skills-Bench", year: "2026", date: "2026-03-16", diff: "front", dim: 0 },
-  { name: "SkillTester", year: "2026", date: "2026-03-28", diff: "front", dim: 0 },
-  { name: "SkillSafetyBench", year: "2026", date: "2026-05-12", diff: "front", dim: 0 },
-  { name: "LoCoMo", year: "2024", date: "2024-02-27", diff: "hard", dim: 1 },
-  { name: "LongMemEval", year: "2024", date: "2024-10-14", diff: "hard", dim: 1 },
-  { name: "MemoryAgentBench", year: "2025", date: "2025-07-07", diff: "front", dim: 1 },
-  { name: "EvoMemBench", year: "2026", date: "2026-05-18", diff: "front", dim: 1 },
-  { name: "MemGym", year: "2026", date: "2026-05-20", diff: "front", dim: 1 },
-  { name: "τ-bench", cat: 1, year: "2024", diff: "hard", dim: 2, key: "tau-bench" },
-  { name: "τ²-bench", cat: 1, year: "2025", diff: "found", dim: 2, key: "tau2" },
-  { name: "τ³-bench", cat: 1, year: "2026", diff: "found", dim: 2, key: "tau3" },
-  { name: "GAIA", cat: 2, year: "2023", diff: "med" },
-  { name: "GPQA", cat: 2, year: "2023", diff: "hard" },
-  { name: "AssistantBench", cat: 2, year: "2024", diff: "hard", dim: 2 },
-  { name: "BrowseComp", cat: 2, year: "2025", diff: "front", dim: 2 },
-  { name: "Humanity's Last Exam", cat: 2, year: "2025", diff: "front" },
-  { name: "WebShop", cat: 3, year: "2022", diff: "med", dim: 2 },
-  { name: "WebArena", cat: 3, year: "2023", diff: "hard", dim: 2 },
-  { name: "OSWorld", cat: 3, year: "2024", diff: "hard", dim: 2 },
-  { name: "AndroidWorld", cat: 3, year: "2024", diff: "med", dim: 2 },
-  { name: "TheAgentCompany", cat: 3, year: "2024", diff: "front" },
+  { name: "AGIEval", cat: 1, year: "2023", diff: "med", key: "agieval", aliases: ["agi-eval"] },
+  { name: "ARC-Challenge", cat: 1, year: "2018", diff: "med", key: "arc-challenge", aliases: ["arc_challenge"] },
+  { name: "BBH", cat: 1, year: "2022", diff: "med", key: "bbh", aliases: ["big-bench-hard"] },
+  { name: "CommonsenseQA", cat: 1, year: "2018", diff: "med", key: "commonsenseqa", aliases: ["commonsense-qa"] },
+  { name: "GSM8K", cat: 1, year: "2021", diff: "med", key: "gsm8k" },
+  { name: "HellaSwag", cat: 1, year: "2019", diff: "med", key: "hellaswag", aliases: ["hella-swag"] },
+  { name: "MATH", cat: 1, year: "2021", diff: "hard", key: "math" },
+  { name: "MMLU", cat: 1, year: "2020", diff: "med", key: "mmlu" },
+  { name: "MMLU-Pro", cat: 1, year: "2024", diff: "hard", key: "mmlu-pro", aliases: ["mmlupro"] },
+  { name: "OpenBookQA", cat: 1, year: "2018", diff: "med", key: "openbookqa", aliases: ["openbook-qa"] },
+  { name: "TruthfulQA", cat: 1, year: "2021", diff: "med", key: "truthfulqa", aliases: ["truthful-qa"] },
+  { name: "GPQA", cat: 1, year: "2023", diff: "hard", key: "gpqa" },
+  { name: "DeepSearchQA", cat: 2, year: "2025", diff: "front", dim: 2, key: "deepsearchqa", aliases: ["deep-search-qa"] },
+  { name: "GDPval", cat: 2, year: "2025", diff: "front", dim: 2, key: "gdpval", aliases: ["gdp-val"] },
+  { name: "Traject-Bench", cat: 3, year: "2025", diff: "hard", dim: 2, key: "traject-bench", aliases: ["trajectbench"] },
+  { name: "τ-bench", cat: 3, year: "2024", diff: "hard", dim: 2, key: "tau-bench", aliases: ["taubench"] },
+  { name: "τ²-bench", cat: 3, year: "2025", diff: "front", dim: 2, key: "tau2-bench", aliases: ["tau2", "tau2bench"] },
+  { name: "τ³-bench", cat: 3, year: "2026", diff: "front", dim: 2, key: "tau3-bench", aliases: ["tau3", "tau3bench"] },
+  { name: "Terminal-Bench 2.1", cat: 0, year: "2026", diff: "front", dim: 2, key: "terminal-bench-2.1", aliases: ["terminalbench21", "terminal-bench-2-1", "tb21"] },
 ];
 
 export function normKey(s: string): string {
@@ -52,43 +49,6 @@ export function normKey(s: string): string {
 
 export function benchKey(b: Benchmark): string {
   return b.key || b.name;
-}
-
-const BENCHMARK_RELEASE_YEARS: Readonly<Record<string, string>> = {
-  ...Object.fromEntries(BENCHMARKS.map((benchmark) => [normKey(benchKey(benchmark)), benchmark.year])),
-  mmlu: "2020",
-  gsm8k: "2021",
-  persistbench: "2026",
-  trajectbench: "2025",
-  gdpval: "2025",
-  mmlupro: "2024",
-  arcchallenge: "2018",
-  truthfulqa: "2021",
-  bbh: "2022",
-  agieval: "2023",
-  commonsenseqa: "2018",
-  hellaswag: "2019",
-  openbookqa: "2018",
-  math: "2021",
-  terminalbench2: "2025",
-};
-
-const BENCHMARK_RELEASE_YEAR_PREFIXES = Object.keys(BENCHMARK_RELEASE_YEARS).sort(
-  (a, b) => b.length - a.length,
-);
-
-function benchmarkReleaseYear(label: string): string | undefined {
-  const key = normKey(label);
-  const candidates = key.startsWith("qa") ? [key, key.slice(2)] : [key];
-  for (const candidate of candidates) {
-    const exact = BENCHMARK_RELEASE_YEARS[candidate];
-    if (exact) return exact;
-    const benchmarkPrefix = BENCHMARK_RELEASE_YEAR_PREFIXES.find((prefix) =>
-      candidate.startsWith(prefix),
-    );
-    if (benchmarkPrefix) return BENCHMARK_RELEASE_YEARS[benchmarkPrefix];
-  }
-  return undefined;
 }
 
 import type { ExperimentSummary } from "../api/types";
@@ -104,137 +64,61 @@ const BENCHMARK_META_KEYS = [
   "suite",
 ] as const;
 
-function dbLabel(value: unknown): string {
-  return String(value ?? "").trim();
-}
-
-function displayBenchmarkName(label: string): string {
-  return label.replace(/^ae2[-_\s]+/i, "").trim() || label;
-}
-
-function firstString(values: unknown[]): string {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim()) return value;
-    if (typeof value === "number") return String(value);
-  }
-  return "";
-}
-
-function experimentBenchmarkLabel(exp: ExperimentSummary): string {
+function experimentBenchmarkLabels(exp: ExperimentSummary): string[] {
   const meta = exp.metadata ?? {};
-  const metadataLabel = firstString(BENCHMARK_META_KEYS.map((key) => meta[key]));
-  return (
-    dbLabel(metadataLabel) ||
-    dbLabel(exp.dataset_name) ||
-    dbLabel(exp.name) ||
-    dbLabel(exp.project_name) ||
-    `Experiment ${exp.id.slice(0, 8)}`
-  );
+  return [
+    ...BENCHMARK_META_KEYS.map((key) => meta[key]),
+    exp.dataset_name,
+    exp.name,
+    exp.project_name,
+  ]
+    .filter((value): value is string | number => typeof value === "string" || typeof value === "number")
+    .map((value) => String(value).trim())
+    .filter(Boolean);
 }
 
-function experimentYear(exp: ExperimentSummary): string {
-  const metaYear = firstString([exp.metadata?.benchmark_year, exp.metadata?.year]);
-  if (/^\d{4}$/.test(metaYear)) return metaYear;
-  const createdYear = String(exp.created_at ?? "").match(/\b(20\d{2})\b/)?.[1];
-  return createdYear ?? new Date().getFullYear().toString();
+function benchmarkAliases(benchmark: Benchmark): string[] {
+  return [benchKey(benchmark), benchmark.name, ...(benchmark.aliases ?? [])]
+    .map(normKey)
+    .filter(Boolean)
+    .filter((alias, index, aliases) => aliases.indexOf(alias) === index)
+    .sort((a, b) => b.length - a.length);
 }
 
-function inferCategory(label: string): number {
-  const key = normKey(label);
-  if (/persistbench|locomo|longmemeval|memoryagentbench|evomembench|memgym/.test(key)) return 1;
-  if (/taubench|tau2|tau3|chat|dialog|retail|airline|customer/.test(key)) return 1;
-  if (/gdpval|terminalbench|osworld|androidworld|webarena|webshop|computer|browser|shop/.test(key)) return 3;
-  if (/^qa(gpqa|mmlupro|arcchallenge|openbookqa)$/.test(key)) return 2;
-  if (
-    /trajectbench|agieval|bbh|commonsenseqa|gsm8k|hellaswag|math|mmlu|truthfulqa|gaia|browse|assistant|exam|research|qa/.test(
-      key,
-    )
-  ) {
-    return 1;
-  }
-  if (/humaneval|swe|code|mbpp|repo/.test(key)) return 0;
-  return 1;
-}
+const BENCHMARK_MATCHERS = BENCHMARKS.flatMap((benchmark) =>
+  benchmarkAliases(benchmark).map((alias) => ({ benchmark, alias })),
+).sort((a, b) => b.alias.length - a.alias.length);
 
-function inferDimension(label: string): number | undefined {
-  const key = normKey(label);
-  if (/persistbench|locomo|longmemeval|memoryagentbench|evomembench|memgym/.test(key)) return 1;
-  if (
-    /taubench|tau2|tau3|trajectbench|terminalbench|gdpval|swebench|assistantbench|browsecomp|webshop|webarena|osworld|androidworld/.test(
-      key,
-    )
-  ) {
-    return 2;
+function staticBenchmarkForExperiment(exp: ExperimentSummary): Benchmark | undefined {
+  for (const label of experimentBenchmarkLabels(exp)) {
+    const normalized = normKey(label);
+    if (!normalized) continue;
+    const exact = BENCHMARK_MATCHERS.find(({ alias }) => normalized === alias);
+    if (exact) return exact.benchmark;
+    const contained = BENCHMARK_MATCHERS.find(({ alias }) => normalized.includes(alias));
+    if (contained) return contained.benchmark;
   }
   return undefined;
 }
 
-function inferDiff(label: string): BenchDiff {
-  const key = normKey(label);
-  if (/tau2|tau3|tauii|tauiii|humaneval/.test(key)) return "found";
-  if (/frontier|front/.test(key)) return "front";
-  if (/swebenchpro|terminalbench|gdpval/.test(key)) return "hard";
-  if (/hard|verified|gpqa|browse|assistant|longmem|loco|webarena|osworld/.test(key)) {
-    return "hard";
-  }
-  if (
-    /medium|med|lite|gaia|webshop|android|tau|mmlu|gsm8k|agieval|arcchallenge|bbh|commonsenseqa|hellaswag|openbookqa|truthfulqa|persistbench|trajectbench|math/.test(
-      key,
-    )
-  ) {
-    return "med";
-  }
-  if (/found|basic/.test(key)) return "found";
-  return "med";
-}
-
-function staticBenchmarkFor(label: string): Benchmark | undefined {
-  const key = normKey(label);
-  if (!key) return undefined;
-  return BENCHMARKS.find((b) => {
-    const bench = normKey(benchKey(b));
-    const name = normKey(b.name);
-    return key === bench || key === name;
-  });
-}
-
-function pushUnique(xs: string[], value: string) {
-  if (!xs.includes(value)) xs.push(value);
-}
-
 export function benchmarksFromExperiments(experiments: ExperimentSummary[]): Benchmark[] {
-  const byKey = new Map<string, Benchmark>();
+  const experimentIdsByBenchmark = new Map<string, string[]>();
   for (const exp of experiments) {
-    const rawLabel = experimentBenchmarkLabel(exp);
-    const displayLabel = displayBenchmarkName(rawLabel);
-    const known = staticBenchmarkFor(displayLabel);
-    const groupKey = rawLabel;
-    if (!groupKey) continue;
-    const prev = byKey.get(groupKey);
-    if (prev) {
-      pushUnique((prev.experimentIds ??= []), exp.id);
-      continue;
-    }
-    const year = known?.year ?? benchmarkReleaseYear(displayLabel) ?? experimentYear(exp);
-    byKey.set(groupKey, {
-      name: displayLabel,
-      cat: known?.cat ?? inferCategory(displayLabel),
-      year,
-      date: known?.date,
-      diff: known?.diff ?? inferDiff(displayLabel),
-      dim: known?.dim ?? inferDimension(displayLabel),
-      key: groupKey,
-      experimentIds: [exp.id],
-    });
+    const benchmark = staticBenchmarkForExperiment(exp);
+    if (!benchmark) continue;
+    const key = normKey(benchKey(benchmark));
+    const ids = experimentIdsByBenchmark.get(key) ?? [];
+    if (!ids.includes(exp.id)) ids.push(exp.id);
+    experimentIdsByBenchmark.set(key, ids);
   }
-  return [...byKey.values()].sort((a, b) => {
-    const yearCmp = String(a.year).localeCompare(String(b.year));
-    return yearCmp || a.name.localeCompare(b.name);
-  });
+  return BENCHMARKS.map((benchmark) => ({
+    ...benchmark,
+    experimentIds: experimentIdsByBenchmark.get(normKey(benchKey(benchmark))) ?? [],
+  }));
 }
 
 export function benchExperiments(b: Benchmark, experiments: ExperimentSummary[]): ExperimentSummary[] {
-  if (b.experimentIds?.length) {
+  if (b.experimentIds) {
     const ids = new Set(b.experimentIds);
     return experiments.filter((e) => ids.has(e.id));
   }

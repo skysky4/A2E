@@ -1,4 +1,4 @@
-import type { AgentInfo, ExperimentRecord, ExperimentSummary } from "../api/types";
+import type { AgentInfo, Annotation, ExperimentRecord, ExperimentSummary } from "../api/types";
 import { benchExperiments, normKey, type Benchmark } from "../data/benchmarks";
 import { dbAgentFromExperiment } from "./dbIdentity";
 
@@ -43,19 +43,39 @@ export function defaultSelection(
 }
 
 export function annotationAverage(records: ExperimentRecord[], name: string): number | null {
-  const target = name.toLowerCase();
   const xs = records
-    .map((r) => (r.annotations ?? []).find((a) => String(a.name).toLowerCase() === target)?.score)
-    .filter((x): x is number => typeof x === "number");
+    .map((record) => annotationScore(record, name))
+    .filter((value): value is number => value != null);
   return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null;
 }
 
 export function annotationSum(records: ExperimentRecord[], name: string): number | null {
-  const target = name.toLowerCase();
   const xs = records
-    .map((r) => (r.annotations ?? []).find((a) => String(a.name).toLowerCase() === target)?.score)
-    .filter((x): x is number => typeof x === "number");
+    .map((record) => annotationScore(record, name))
+    .filter((value): value is number => value != null);
   return xs.length ? xs.reduce((s, x) => s + x, 0) : null;
+}
+
+const LEGACY_METRIC_ALIASES: Record<string, string[]> = {
+  correctness: ["correct", "accuracy", "resolved", "tb_resolved", "swe_resolved"],
+  task_completion: ["task_succeeded"],
+  wall_time: ["elapsed_time"],
+};
+
+export function metricAnnotation(record: ExperimentRecord, name: string): Annotation | undefined {
+  const candidates = [name, ...(LEGACY_METRIC_ALIASES[name.toLowerCase()] ?? [])].map((candidate) =>
+    candidate.toLowerCase(),
+  );
+  return candidates
+    .map((candidate) =>
+      (record.annotations ?? []).find((annotation) => String(annotation.name).toLowerCase() === candidate),
+    )
+    .find(Boolean);
+}
+
+export function annotationScore(record: ExperimentRecord, name: string): number | null {
+  const score = metricAnnotation(record, name)?.score;
+  return typeof score === "number" && Number.isFinite(score) ? score : null;
 }
 
 export function fmtMs(ms: number): string {
@@ -69,11 +89,22 @@ export function formatScore(value: number | null | undefined): string {
 
 export function formatMetricValue(name: string, value: number | null | undefined): string {
   if (typeof value !== "number") return "—";
-  if (name === "total_token_usage" || name === "total_token" || name === "answer_cost") {
-    return Math.round(value).toLocaleString("en-US");
+  if (name === "total_token_usage" || name === "total_token") {
+    return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
   }
   if (name === "cost") return formatUsd(value);
-  if (name === "tool_call_count") return (Math.round(value * 10) / 10).toLocaleString("en-US");
+  if (name === "wall_time") return `${value.toFixed(2)}s`;
+  if (
+    [
+      "tool_call_count",
+      "idle_turn_count",
+      "tool_execution_error_rate",
+      "repeated_tool_call_rate",
+      "redcode_risky_operation_count",
+    ].includes(name)
+  ) {
+    return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  }
   return value.toFixed(2);
 }
 
@@ -93,22 +124,24 @@ export function totalTokenUsage(records: ExperimentRecord[]): number | null {
 }
 
 export function recordTokenUsage(record: ExperimentRecord): number | null {
+  const evaluated = annotationScore(record, "total_token_usage");
+  if (evaluated != null) return evaluated;
   const hasPrompt = typeof record.prompt_token_count === "number";
   const hasCompletion = typeof record.completion_token_count === "number";
   if (hasPrompt || hasCompletion) {
     return (record.prompt_token_count ?? 0) + (record.completion_token_count ?? 0);
   }
-  const annotation = (record.annotations ?? []).find(
-    (item) => String(item.name).toLowerCase() === "total_token_usage",
-  );
-  return typeof annotation?.score === "number" ? annotation.score : null;
+  return null;
+}
+
+export function averageTokenUsage(records: ExperimentRecord[]): number | null {
+  const values = records.map(recordTokenUsage).filter((value): value is number => value != null);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
 }
 
 export function recordCost(record: ExperimentRecord): number | null {
-  const annotation = (record.annotations ?? []).find(
-    (item) => String(item.name).toLowerCase() === "cost",
-  );
-  if (typeof annotation?.score === "number") return annotation.score;
+  const evaluated = annotationScore(record, "cost");
+  if (evaluated != null) return evaluated;
   return typeof record.calculated_cost === "number" ? record.calculated_cost : null;
 }
 

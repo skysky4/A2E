@@ -1,28 +1,20 @@
 import type { AgentInfo, ExperimentContext, ExperimentRecord } from "../api/types";
-import { CATS, type Benchmark } from "../data/benchmarks";
+import { benchKey, CATS, normKey, type Benchmark } from "../data/benchmarks";
 import {
   annotationAverage,
+  averageTokenUsage,
   averageRecordCost,
   formatMetricValue,
   totalTokenUsage,
 } from "../utils/eval";
+import { catalogGroupMetrics } from "../api/metrics";
 import { getMetricDescription, metricRangeClass } from "../utils/metricDescriptions";
 import { FishboneCard } from "./FishboneCard";
 import { MetricTooltip } from "./MetricTooltip";
 
-const EFFICIENCY_METRICS = ["conciseness", "total_token_usage", "cost", "turn_count", "elapsed_time"] as const;
-const SAFETY_METRICS = [
-  "hallucination",
-  "privacy_leakage",
-  "unauthorized_action",
-  "harmful_action",
-  "failure_transparency",
-  "prompt_injection_resilience",
-] as const;
-const ACCURACY_METRICS = [
-  "correctness",
-  "task_succeeded",
-] as const;
+const EFFICIENCY_METRICS = catalogGroupMetrics("efficiency");
+const SAFETY_METRICS = catalogGroupMetrics("safety");
+const CORRECTNESS_METRICS = catalogGroupMetrics("correct");
 
 interface Props {
   benchmark: Benchmark | null;
@@ -32,7 +24,6 @@ interface Props {
   experimentDatasetName?: string;
   projectName?: string;
   testedAgentModel?: string;
-  judgeModel?: string;
 }
 
 function infoItem(label: string, value: string) {
@@ -52,7 +43,6 @@ export function EvalPanel({
   experimentDatasetName,
   projectName,
   testedAgentModel,
-  judgeModel,
 }: Props) {
   if (!benchmark || !records.length) {
     return (
@@ -65,43 +55,19 @@ export function EvalPanel({
     );
   }
 
-  const names: string[] = [];
-  for (const r of records) {
-    for (const a of r.annotations ?? []) {
-      if (!names.includes(a.name)) names.push(a.name);
-    }
-  }
-
-  const avgOf = (name: string) => {
-    const target = name.toLowerCase();
-    const xs = records
-      .map((r) => (r.annotations ?? []).find((a) => String(a.name).toLowerCase() === target)?.score)
-      .filter((x): x is number => typeof x === "number");
-    return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null;
-  };
-
-  const avgFirst = (candidates: string[]) => {
-    for (const name of candidates) {
-      const value = avgOf(name);
-      if (value != null) return value;
-    }
-    return null;
-  };
-
-  const overall = avgFirst(["correctness", "task_succeeded"]);
+  const overall = annotationAverage(records, "correctness");
   const totalToken = totalTokenUsage(records);
+  const isTerminalBench21 = normKey(benchKey(benchmark)) === "terminalbench21";
   const hasScore = typeof overall === "number";
   const pct = hasScore ? Math.max(0, Math.min(100, overall * 100)) : 0;
   const good = hasScore && overall >= 0.5;
   const overallDescription = [
-    "- Meaning: Benchmark-level average correctness score used as the overall result.",
-    "- Calculation: Average of the first available correctness-style metric: correctness or task_succeeded.",
-    "- Display: 0 to 1; higher is better.",
+    "- Average correctness across scored samples in the selected run.",
+    "- Range: 0 to 1; higher is better. Green is 0.50 or above.",
   ].join("\n");
   const totalTokenDescription = [
-    "- Meaning: Total token usage across the selected benchmark.",
-    "- Calculation: Uses sample prompt and completion tokens first, then falls back to the total_token_usage annotation.",
-    "- Display: Non-negative token count.",
+    "- Total tokens used by samples in the selected run.",
+    "- Uses total_token_usage, or prompt plus completion tokens when that value is missing.",
   ].join("\n");
   const domain =
     (benchmark.cat != null ? CATS[benchmark.cat] : undefined) ||
@@ -109,7 +75,7 @@ export function EvalPanel({
     benchmark.name;
 
   const metricValue = (name: string): number | null => {
-    if (name === "total_token_usage") return totalTokenUsage(records);
+    if (name === "total_token_usage") return averageTokenUsage(records);
     if (name === "cost") return averageRecordCost(records);
     return annotationAverage(records, name);
   };
@@ -117,7 +83,7 @@ export function EvalPanel({
   return (
     <article className="panel eval">
       <div className="panel-inner" id="eval-body">
-        <p className="kicker">Eval · {benchmark.name} all-sample average</p>
+        <p className="kicker">Eval · {benchmark.name} selected-run results</p>
 
         <div className="card eval-summary-card">
           <p className="card-label">SUMMARY</p>
@@ -134,7 +100,7 @@ export function EvalPanel({
                 <MetricTooltip text={overallDescription} />
               </div>
               <div className="summary-sub">
-                {records.length} samples · average correctness
+                {records.length} samples · correctness averaged over scored samples
               </div>
             </div>
             <div className="summary-token has-metric-tooltip">
@@ -149,7 +115,7 @@ export function EvalPanel({
               <div className="info-grid">
                 {infoItem("Agent", agent?.label ?? context?.agent?.names?.join(", ") ?? "—")}
                 {infoItem("Tested agent model", testedAgentModel || "—")}
-                {infoItem("LLM-as-a-judge model", judgeModel || "—")}
+                {infoItem("LLM-as-a-judge model", "Deepseek-V4-Pro")}
                 {infoItem("Benchmark", benchmark.name)}
                 {infoItem("Dataset", context?.dataset?.name ?? experimentDatasetName ?? "—")}
                 {infoItem("Project ID", projectName ?? context?.experiment?.project_name ?? "—")}
@@ -165,7 +131,7 @@ export function EvalPanel({
           </details>
         </div>
 
-        <FishboneCard records={records} overall={overall} />
+        <FishboneCard records={records} overall={overall} isTerminalBench21={isTerminalBench21} />
 
         <div className="card eval-assessment-card">
           <p className="card-label">EVALUATION</p>
@@ -175,8 +141,14 @@ export function EvalPanel({
               <strong>Metrics</strong>
             </div>
             {[
-              ["Correctness", "correctness", ACCURACY_METRICS.map((name) => [name, metricValue(name)] as const)],
-              ["Safety", "safety", SAFETY_METRICS.map((name) => [name, metricValue(name)] as const)],
+              ["Correctness", "correctness", CORRECTNESS_METRICS.map((name) => [name, metricValue(name)] as const)],
+              [
+                "Safety",
+                "safety",
+                SAFETY_METRICS
+                  .filter((name) => !isTerminalBench21 || name !== "prompt_injection_resilience")
+                  .map((name) => [name, metricValue(name)] as const),
+              ],
               ["Efficiency", "efficiency", EFFICIENCY_METRICS.map((name) => [name, metricValue(name)] as const)],
             ].map(([label, group, metrics], i) => (
               <div key={String(label)} className={`assessment-row assessment-${group}`}>

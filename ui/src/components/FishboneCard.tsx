@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ExperimentRecord } from "../api/types";
+import { catalogGroupMetrics } from "../api/metrics";
 import { annotationAverage, formatMetricValue, formatScore } from "../utils/eval";
 import { getMetricDescription, metricRangeClass } from "../utils/metricDescriptions";
 import { MetricTooltip } from "./MetricTooltip";
@@ -52,39 +53,37 @@ function SubFishbone({ parentNode, subMetrics }: { parentNode: string; subMetric
   );
 }
 
-export function FishboneCard({ records, overall }: { records: ExperimentRecord[]; overall: number | null }) {
+export function FishboneCard({
+  records,
+  overall,
+  isTerminalBench21,
+}: {
+  records: ExperimentRecord[];
+  overall: number | null;
+  isTerminalBench21: boolean;
+}) {
   const cardRef = useRef<HTMLDivElement>(null);
   const [openId, setOpenId] = useState<string | null>(null);
 
-  const planSubMetrics: SubMetric[] = [
-    ["plan_grade", annotationAverage(records, "plan_grade")],
-    ["plan_goal_alignment", annotationAverage(records, "plan_goal_alignment")],
-    ["plan_completeness", annotationAverage(records, "plan_completeness")],
-    ["plan_constraint_adherence", annotationAverage(records, "plan_constraint_adherence")],
-    ["plan_hallucination", annotationAverage(records, "plan_hallucination")],
-  ];
-  const toolSubMetrics: SubMetric[] = [
-    ["tool_hallucination", annotationAverage(records, "tool_hallucination")],
-    ["tool_invocation", annotationAverage(records, "tool_invocation")],
-    ["self_correction_rate", annotationAverage(records, "self_correction_rate")],
-    ["tool_call_count", annotationAverage(records, "tool_call_count")],
-  ];
-  const finalSubMetrics: SubMetric[] = [
-    ["correctness", annotationAverage(records, "correctness")],
-    ["task_succeeded", annotationAverage(records, "task_succeeded")],
-  ];
+  const groupMetrics = (group: string): SubMetric[] =>
+    catalogGroupMetrics(group).map((name) => [name, annotationAverage(records, name)]);
+  const planSubMetrics = groupMetrics("plan");
+  const toolSubMetrics = groupMetrics("tool").filter(
+    ([name]) => !isTerminalBench21 || name !== "tool_recall",
+  );
+  const finalSubMetrics = groupMetrics("correct");
+  const toolMetric = isTerminalBench21 ? "tool_invocation" : "tool_recall";
 
   const finalResultDescription = [
-    "- Meaning: Structural final result node on the fishbone spine.",
-    "- Calculation: Shows the benchmark-level overall score, which is the average of the first available correctness-style metric.",
-    "- Expanded metrics: correctness and task_succeeded.",
+    "- Average correctness across scored samples in the selected run.",
+    "- Select this node to view its correctness metrics.",
   ].join("\n");
 
   const nodes: FishboneNode[] = [
     { id: "plan", node: "Plan", metric: "plan_grade", score: annotationAverage(records, "plan_grade"), sub: planSubMetrics },
     { id: "memory", node: "Memory", metric: "", score: null, tooltipMetric: null, empty: true },
     { id: "skill", node: "Skill", metric: "", score: null, tooltipMetric: null, empty: true },
-    { id: "tool", node: "Tool", metric: "tool_recall", score: annotationAverage(records, "tool_recall"), sub: toolSubMetrics },
+    { id: "tool", node: "Tool", metric: toolMetric, score: annotationAverage(records, toolMetric), sub: toolSubMetrics },
     { id: "final", node: "Final_Result", metric: "final_result", score: overall, sub: finalSubMetrics, tooltipMetric: null, description: finalResultDescription },
   ];
 

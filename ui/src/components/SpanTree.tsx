@@ -6,12 +6,14 @@ import {
   attrValue,
   buildTree,
   collectMessages,
+  displaySpanName,
   expandCompactTraceSpans,
   fmtMs,
   isTraceRootNode,
   kindColor,
   kindSummary,
   normalizeVisibleSpans,
+  semanticSpanKind,
   spanId,
   tokenTotal,
   toTime,
@@ -21,15 +23,17 @@ import {
 
 function SpanDetail({ span }: { span: SpanNode }) {
   const a = span.attributes ?? {};
-  const kind = String(span.span_kind || "").toLowerCase();
+  const kind = semanticSpanKind(span).toLowerCase();
   const inMsgs = collectMessages(a, "llm.input_messages");
   const outMsgs = collectMessages(a, "llm.output_messages");
   const inp = attrValue(a, "input.value") ?? attrValue(a, "input");
   const outp = attrValue(a, "output.value") ?? attrValue(a, "output");
+  const showsInputMessages = (kind === "llm" || kind === "prompt") && inMsgs.length > 0;
+  const showsOutputMessages = kind === "llm" && outMsgs.length > 0;
 
   return (
     <div>
-      {kind === "llm" && inMsgs.length ? (
+      {showsInputMessages ? (
         <div className="detail-sec">
           <p className="card-label">Input messages</p>
           {inMsgs.map((m, i) => (
@@ -40,7 +44,7 @@ function SpanDetail({ span }: { span: SpanNode }) {
           ))}
         </div>
       ) : null}
-      {kind === "llm" && outMsgs.length ? (
+      {showsOutputMessages ? (
         <div className="detail-sec">
           <p className="card-label">Output messages</p>
           {outMsgs.map((m, i) => (
@@ -51,7 +55,7 @@ function SpanDetail({ span }: { span: SpanNode }) {
           ))}
         </div>
       ) : null}
-      {!(kind === "llm" && (inMsgs.length || outMsgs.length)) ? (
+      {!(showsInputMessages || showsOutputMessages) ? (
         <>
           {inp != null ? (
             <div className="detail-sec">
@@ -100,7 +104,7 @@ function TraceNodeRow({
   const durMs = Math.max(0, node.rangeEnd - node.rangeStart);
   const offPct = ((node.rangeStart - t0) / total) * 100;
   const widPct = Math.max(1.5, (durMs / total) * 100);
-  const kind = (s.span_kind || "UNKNOWN").toUpperCase();
+  const kind = semanticSpanKind(s);
   const color = kindColor(kind);
   const isErr = String(s.status_code).toUpperCase() === "ERROR";
   const hasKids = node.children.length > 0;
@@ -127,7 +131,7 @@ function TraceNodeRow({
         <div className="trace-node-body">
           <div className="trace-node-top">
             <span className="trace-kind">{kind}</span>
-            <span className="trace-node-name">{s.name || "span"}</span>
+            <span className="trace-node-name">{displaySpanName(s)}</span>
           </div>
         </div>
         <div className="trace-node-time">
@@ -244,7 +248,7 @@ function GlobalTraceAxis({ spans, t0, total }: { spans: SpanNode[]; t0: number; 
       </div>
       <div className="trace-global-track">
         {timed.map((item) => {
-          const kind = String(item.span.span_kind || "UNKNOWN").toUpperCase();
+          const kind = semanticSpanKind(item.span);
           const left = Math.max(0, Math.min(100, ((item.start - t0) / total) * 100));
           const right = Math.max(left, Math.min(100, ((item.end - t0) / total) * 100));
           const width = Math.max(0.35, right - left);
@@ -252,7 +256,7 @@ function GlobalTraceAxis({ spans, t0, total }: { spans: SpanNode[]; t0: number; 
             <span
               key={item.id}
               className="trace-global-seg"
-              title={`${kind} · ${item.span.name || "span"} · ${fmtMs(item.end - item.start)}`}
+              title={`${kind} · ${displaySpanName(item.span)} · ${fmtMs(item.end - item.start)}`}
               style={{
                 left: `${left}%`,
                 width: `${width}%`,

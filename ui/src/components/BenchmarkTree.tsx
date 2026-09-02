@@ -1,10 +1,9 @@
 import { benchExperiments, normKey, benchKey, type Benchmark } from "../data/benchmarks";
 import type { AgentInfo, ExperimentSummary } from "../api/types";
 import { benchDefaultSelection } from "../utils/eval";
-import { esc } from "../utils/format";
 import { Fragment, useState, useMemo } from "react";
 
-const CATS = ["Coding", "Conversational", "Research", "Computer use"];
+const CATS = ["Coding", "Reasoning", "Research & Work", "Tool Use"];
 const CAPS = ["Skill", "Memory", "Tool"];
 const YEARS = ["2020", "2021", "2022", "2023", "2024", "2025", "2026"];
 
@@ -25,7 +24,6 @@ interface Props {
   experiments: ExperimentSummary[];
   selectedKey: string | null;
   onSelect: (b: Benchmark, exp: ExperimentSummary, agent: AgentInfo | null) => void;
-  onToast: (msg: string) => void;
 }
 
 function BenchGrid({
@@ -35,7 +33,6 @@ function BenchGrid({
   experiments,
   selectedKey,
   onSelect,
-  onToast,
 }: {
   face: (typeof TREE_FACES)[number];
   benchmarks: Benchmark[];
@@ -43,7 +40,6 @@ function BenchGrid({
   experiments: ExperimentSummary[];
   selectedKey: string | null;
   onSelect: Props["onSelect"];
-  onToast: Props["onToast"];
 }) {
   return (
     <div className="bench-wrap">
@@ -70,14 +66,11 @@ function BenchGrid({
                       key={key}
                       type="button"
                       className={`bench-chip d-${b.diff}${exps.length ? " avail" : ""}${selectedKey === key ? " sel" : ""}`}
-                      title={b.date ? `${b.name} · released ${b.date}` : b.name}
+                      title={exps.length ? `${b.name} · ${exps.length} run${exps.length === 1 ? "" : "s"}` : `${b.name} · No results in the current database`}
+                      disabled={!exps.length}
                       onClick={() => {
-                        if (exps.length) {
-                          const sel = benchDefaultSelection(b, experiments);
-                          if (sel) onSelect(sel.b, sel.exp, sel.agent);
-                        } else {
-                          onToast(`${b.name}: No data`);
-                        }
+                        const sel = benchDefaultSelection(b, experiments);
+                        if (sel) onSelect(sel.b, sel.exp, sel.agent);
                       }}
                     >
                       <span className="bench-name">{b.name}</span>
@@ -99,7 +92,6 @@ function CubeScene({
   experiments,
   selectedKey,
   onSelect,
-  onToast,
 }: Props) {
   const [faceIdx, setFaceIdx] = useState(0);
   const [spin, setSpin] = useState<{ from: number; to: number; key: number } | null>(null);
@@ -132,7 +124,6 @@ function CubeScene({
             experiments={experiments}
             selectedKey={selectedKey}
             onSelect={onSelect}
-            onToast={onToast}
           />
         </div>
         {spin ? (
@@ -152,7 +143,6 @@ function CubeScene({
                 experiments={experiments}
                 selectedKey={selectedKey}
                 onSelect={onSelect}
-                onToast={onToast}
               />
               </div>
           ))}
@@ -163,7 +153,7 @@ function CubeScene({
   );
 }
 
-export function BenchmarkTree({ benchmarks, experiments, selectedKey, onSelect, onToast }: Props) {
+export function BenchmarkTree({ benchmarks, experiments, selectedKey, onSelect }: Props) {
   const linked = benchmarks.filter((b) => benchExperiments(b, experiments).length).map((b) => b.name);
 
   return (
@@ -172,15 +162,13 @@ export function BenchmarkTree({ benchmarks, experiments, selectedKey, onSelect, 
         <p className="kicker">Task</p>
         <h2 className="bench-title">Agent benchmark tree</h2>
         <p className="muted" style={{ margin: "-4px 0 4px", fontSize: 12 }}>
-          {experiments.length} experiments in the current database
-          {linked.length ? ` · ${linked.length} benchmarks: ${esc(linked.join(", "))}` : " · No experiment data"}
+          {experiments.length} experiments in the current database · {linked.length}/23 benchmarks available
         </p>
         <CubeScene
           benchmarks={benchmarks}
           experiments={experiments}
           selectedKey={selectedKey}
           onSelect={onSelect}
-          onToast={onToast}
         />
         <div className="bench-legend">
           {Object.values(DIFF_LABEL).map(([label, color]) => (
@@ -189,6 +177,10 @@ export function BenchmarkTree({ benchmarks, experiments, selectedKey, onSelect, 
               {label}
             </span>
           ))}
+          <span>
+            <i className="bench-unavailable-key" />
+            No results
+          </span>
         </div>
       </div>
     </article>

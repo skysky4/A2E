@@ -21,6 +21,78 @@ export function spanId(span: SpanNode, index: number): string {
   return span.span_id || `span-${index}`;
 }
 
+export function semanticSpanKind(span: SpanNode): string {
+  const recordedKind = String(span.span_kind || "UNKNOWN").trim().toUpperCase() || "UNKNOWN";
+  if (recordedKind !== "UNKNOWN") return recordedKind;
+
+  const name = String(span.name || "").trim();
+  if (/^execute_tool(?:\b|[._])/i.test(name)) return "TOOL";
+  if (/^campaign\.trial\./i.test(name)) return "CHAIN";
+  if (/^(?:create|invoke)_agent(?:\b|[._])/i.test(name)) return "AGENT";
+  if (/^call_llm(?:\b|[._])/i.test(name)) return "LLM";
+  return recordedKind;
+}
+
+function humanizeIdentifier(value: string): string {
+  const words = value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return words ? `${words.charAt(0).toUpperCase()}${words.slice(1)}` : "Workflow step";
+}
+
+const CHAIN_NAME_OVERRIDES: Record<string, string> = {
+  kickoff: "Start workflow",
+  generate_plan: "Generate plan",
+  check_todos_available: "Check available tasks",
+  initialize_reasoning: "Initialize reasoning",
+  check_max_iterations: "Check iteration limit",
+  call_llm_native_tools: "Call LLM",
+  execute_native_tool: "Execute tool",
+  check_native_todo_completion: "Check task completion",
+  increment_and_continue: "Continue to next iteration",
+  continue_iteration: "Continue iteration",
+  aggregate_tool_results: "Aggregate tool results",
+  call_tool: "Call tool",
+  setup_agent: "Set up agent",
+  run_agent_step: "Run agent step",
+  parse_agent_output: "Parse agent output",
+};
+
+function chainStepName(value: string): string {
+  return CHAIN_NAME_OVERRIDES[value] || humanizeIdentifier(value);
+}
+
+export function displaySpanName(span: SpanNode): string {
+  const name = String(span.name || "").trim();
+  if (!name) return "Span";
+
+  const flow = name.match(/^Flow_[0-9a-f-]+(?:\.(.+))?$/i);
+  if (flow) return flow[1] ? chainStepName(flow[1]) : "Agent workflow";
+
+  const workflowAgent = name.match(/^BaseWorkflowAgent\.(.+)$/i);
+  if (workflowAgent) return chainStepName(workflowAgent[1]);
+  if (/^FunctionAgent\.run$/i.test(name)) return "Run agent";
+  if (/^campaign\.trial\./i.test(name)) return "Evaluation trial";
+  if (/^Task:\s*task_fn$/i.test(name)) return "Task run";
+  if (/^_branch_after_router$/i.test(name)) return "Route result";
+  if (/^router$/i.test(name)) return "Route request";
+  if (/^executor$/i.test(name)) return "Execute step";
+  if (/^turn$/i.test(name)) return "Agent turn";
+  if (/^call_llm$/i.test(name)) return "Call LLM";
+
+  const tool = name.match(/^execute_tool(?:\s+(.+))?$/i);
+  if (tool) return tool[1] ? `Execute tool: ${humanizeIdentifier(tool[1])}` : "Execute tool";
+  const agent = name.match(/^(create|invoke)_agent(?:\s+(.+))?$/i);
+  if (agent) {
+    const action = agent[1].toLowerCase() === "create" ? "Create agent" : "Invoke agent";
+    return agent[2] ? `${action}: ${humanizeIdentifier(agent[2])}` : action;
+  }
+
+  return name;
+}
+
 function isInternalSpan(span: SpanNode): boolean {
   const name = String(span.name || "");
   const kind = String(span.span_kind || "").toUpperCase();
@@ -109,43 +181,53 @@ function toolIntentFromAssistant(content: string): { name: string; command: stri
 }
 
 export function expandTraceConversationSpans(spans: SpanNode[]): SpanNode[] {
-  const hasToolSpans = spans.some((s) => String(s.span_kind || "").toUpperCase() === "TOOL");
+  const hasToolSpans = spans.some((s) => semanticSpanKind(s) === "TOOL");
   const expanded: SpanNode[] = [...spans];
   const seenSyntheticIds = new Set(expanded.map((s, i) => spanId(s, i)));
   for (const span of spans) {
-    const kind = String(span.span_kind || "").toUpperCase();
+    const kind = semanticSpanKind(span);
     const attrs = span.attributes ?? {};
     if (kind !== "LLM") continue;
     const parent = span.span_id;
     const inputMessages = collectMessages(attrs, "llm.input_messages");
     const outputMessages = collectMessages(attrs, "llm.output_messages");
-    const messages = [
-      ...inputMessages.map((m) => ({ direction: "Input", kind: "PROMPT", message: m })),
-      ...outputMessages.map((m) => ({ direction: "Output", kind: "LLM", message: m })),
-    ];
-    messages.forEach((item, index) => {
-      const role = item.message.role || "message";
-      const text = messageText(item.message);
-      const time = childTime(span, index + 1, messages.length + 2);
-      const messageId = `${parent}:message:${index}`;
+    const syntheticCount = (inputMessages.length ? 1 : 0) + outputMessages.length;
+    if (inputMessages.length) {
+      const inputId = `${parent}:input-messages`;
+      if (!seenSyntheticIds.has(inputId)) {
+        seenSyntheticIds.add(inputId);
+        expanded.push({
+          span_id: inputId,
+          parent_id: parent,
+          name: `LLM Input · ${inputMessages.length} ${inputMessages.length === 1 ? "message" : "messages"}`,
+          span_kind: "PROMPT",
+          ...childTime(span, 1, syntheticCount + 2),
+          attributes: { "llm.input_messages": inputMessages },
+          synthetic: true,
+        });
+      }
+    }
+    outputMessages.forEach((message, index) => {
+      const role = message.role || "message";
+      const text = messageText(message);
+      const timeIndex = index + (inputMessages.length ? 2 : 1);
+      const time = childTime(span, timeIndex, syntheticCount + 2);
+      const messageId = `${parent}:output-message:${index}`;
       if (seenSyntheticIds.has(messageId)) return;
       seenSyntheticIds.add(messageId);
       expanded.push({
         span_id: messageId,
         parent_id: parent,
-        name: `${item.direction}: ${role}`,
-        span_kind: item.kind,
+        name: `Output: ${role}`,
+        span_kind: "LLM",
         ...time,
-        attributes:
-          item.direction === "Input"
-            ? { input: text, role }
-            : { output: text, role },
+        attributes: { output: text, role },
         synthetic: true,
       });
-      if (!hasToolSpans && item.direction === "Output") {
+      if (!hasToolSpans) {
         const toolIntent = toolIntentFromAssistant(text);
         if (toolIntent) {
-          const toolTime = childTime(span, index + 2, messages.length + 2);
+          const toolTime = childTime(span, timeIndex + 1, syntheticCount + 2);
           const toolId = `${parent}:tool-intent:${index}`;
           if (seenSyntheticIds.has(toolId)) return;
           seenSyntheticIds.add(toolId);
@@ -180,7 +262,7 @@ export function kindColor(kind?: string): string {
 export function kindSummary(spans: SpanNode[]): string {
   const counts: Record<string, number> = {};
   spans.forEach((s) => {
-    const k = String(s.span_kind || "UNKNOWN").toUpperCase();
+    const k = semanticSpanKind(s);
     counts[k] = (counts[k] || 0) + 1;
   });
   return Object.entries(counts)

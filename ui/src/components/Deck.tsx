@@ -7,7 +7,6 @@ import { defaultSelection } from "../utils/eval";
 import { applyModelPricing } from "../utils/pricing";
 import {
   dbAgentFromExperiment,
-  dbJudgeModelNamesForSelection,
   dbTestedAgentModelNamesForSelection,
 } from "../utils/dbIdentity";
 import { BenchmarkTree } from "./BenchmarkTree";
@@ -139,7 +138,10 @@ export function Deck({ experiments, onBack }: Props) {
           ) : null}
           <div className="topbar-brand">
             <span>OpenCompass</span>
-            <strong>A²E: Agent Auditing Engine</strong>
+            <div className="brand-product-line">
+              <strong>A²E</strong>
+              <small>· Evaluation Results</small>
+            </div>
           </div>
         </div>
         <nav className="segmented" ref={segRef} aria-label="View switcher">
@@ -165,7 +167,6 @@ export function Deck({ experiments, onBack }: Props) {
           experiments={experiments}
           selectedKey={selectedKey}
           onSelect={(b, exp, agent) => handleSelect(b, exp, agent)}
-          onToast={showToast}
         />
         <TracePanel
           records={records}
@@ -184,7 +185,6 @@ export function Deck({ experiments, onBack }: Props) {
           experimentDatasetName={selectedExp?.dataset_name}
           projectName={selectedExp?.project_name}
           testedAgentModel={dbTestedAgentModelNamesForSelection(selectedExp, context, records).join(", ")}
-          judgeModel={dbJudgeModelNamesForSelection(selectedExp, context, records).join(", ")}
         />
       </main>
 
