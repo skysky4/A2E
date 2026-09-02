@@ -86,11 +86,11 @@ function CapabilityBoundary({ onBack }: { onBack: () => void }) {
           <div className="capability-boundary-copy">
             <p className="capability-boundary-intro">
               This table demonstrates A²E’s ability to run, evaluate, and compare diverse agent harnesses across
-              benchmarks and backbone models within a unified pipeline. A²E currently supports 23 benchmarks, with
+              benchmarks and LLMs within a unified pipeline. A²E currently supports 23 benchmarks, with
               results presented here for four frontier evaluations: <span className="capability-benchmark-name">DeepSearchQA</span> for deep web research, <span className="capability-benchmark-name">GDPval</span> for
               economically valuable professional work, the <span className="capability-benchmark-name">τ series</span> for conversational tool use, and <span className="capability-benchmark-name">Terminal-Bench
               2.1</span> for challenging command-line tasks. The table reports official benchmark performance across nine
-              agent harnesses and two backbone models. Higher scores are better; the best harness in each row is shown
+              agent harnesses and two LLMs. Higher scores are better; the best harness in each row is shown
               in bold with a green highlight.
             </p>
             <p className="capability-range-note">
@@ -125,7 +125,7 @@ function CapabilityBoundary({ onBack }: { onBack: () => void }) {
               <tbody key={backbone.model}>
                 <tr className="capability-backbone-row">
                   <th colSpan={10} scope="rowgroup">
-                    <span>Backbone</span>
+                    <span>LLM</span>
                     <code>{backbone.model}</code>
                   </th>
                 </tr>
