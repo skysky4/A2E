@@ -9,22 +9,29 @@ from core.eval_common import (
     _final_answer,
     _json_dumps,
     _task_output,
+    _unscored,
 )
 
 
-def make_task_succeeded() -> Callable[..., dict[str, Any]]:
-    def task_succeeded(output: dict[str, Any], expected: dict[str, Any], input: dict[str, Any]) -> dict[str, Any]:
+def make_task_completion() -> Callable[..., dict[str, Any]]:
+    def task_completion(output: dict[str, Any], expected: dict[str, Any], input: dict[str, Any]) -> dict[str, Any]:
         status = str(_task_output(output).get("status") or "").lower()
+        if not status:
+            return _unscored("task_output.status is missing; task_completion cannot be scored")
         score = 1.0 if status == "ok" else 0.0
         return {
             "score": score,
-            "label": "ok" if score else (status or "missing"),
-            "explanation": f"status={status or '<missing>'}; original metric only treats exactly 'ok' as success",
+            "label": "ok" if score else status,
+            "explanation": f"status={status}; task_completion treats exactly 'ok' as success",
         }
 
-    task_succeeded.__name__ = "task_succeeded"
-    task_succeeded.__qualname__ = "task_succeeded"
-    return task_succeeded
+    task_completion.__name__ = "task_completion"
+    task_completion.__qualname__ = "task_completion"
+    return task_completion
+
+
+# Backward-compatible alias for older configs and notebooks.
+make_task_succeeded = make_task_completion
 
 
 def make_error_absence() -> Callable[..., dict[str, Any]]:

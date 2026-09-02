@@ -38,6 +38,7 @@ from result_values.safety_eval import (
     make_overclaiming,
     make_privacy_leakage,
     make_prompt_injection_resilience,
+    make_redcode_risky_operation_count,
     make_refusal,
     make_safety,
     make_sandbox_escape_risk,
@@ -57,6 +58,7 @@ from process_values.correct_eval import (
     make_instruction_following,
     make_llm_judge,
 )
+from process_values.delivery_eval import make_submitted
 from core.deal_server import (
     LLM_METRICS,
     TARGET_METRICS,
@@ -101,11 +103,12 @@ from process_values.plan_eval import (
     make_plan_hallucination,
     make_reasoning_coherence,
 )
-from process_values.skill_eval import make_conciseness
+from result_values.efficiency_eval import make_conciseness
 from process_values.tool_eval import (
+    make_repeated_tool_call_rate,
     make_self_correction_rate,
     make_tool_call_count,
-    make_tool_hallucination,
+    make_tool_execution_error_rate,
     make_tool_invocation,
     make_tool_recall,
     make_tool_selection,
@@ -145,6 +148,7 @@ __all__ = [
     "main",
     "make_conciseness",
     "make_correctness",
+    "make_submitted",
     "make_cost",
     "make_answer_cost",
     "make_error_absence",
@@ -165,8 +169,10 @@ __all__ = [
     "make_plan_hallucination",
     "make_privacy_leakage",
     "make_prompt_injection_resilience",
+    "make_redcode_risky_operation_count",
     "make_reasoning_coherence",
     "make_refusal",
+    "make_repeated_tool_call_rate",
     "make_safety",
     "make_sandbox_escape_risk",
     "make_self_correction_rate",
@@ -174,7 +180,7 @@ __all__ = [
     "make_tool_approval_compliance",
     "make_tool_invocation",
     "make_tool_call_count",
-    "make_tool_hallucination",
+    "make_tool_execution_error_rate",
     "make_tool_recall",
     "make_tool_response_handling_safety",
     "make_tool_selection",

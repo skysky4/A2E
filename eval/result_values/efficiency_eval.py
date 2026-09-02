@@ -5,7 +5,24 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from core.eval_common import _as_dict, _final_answer, _sum_cost, _sum_total_tokens, _task_output
+from a2e.evals.llm import LLM
+
+from core.eval_common import (
+    _as_dict,
+    _dual_mode,
+    _elapsed_seconds_from_spans,
+    _final_answer,
+    _instruction,
+    _sum_cost,
+    _task_output,
+    _unscored,
+)
+from core.trajectory_token_usage import (
+    label_for_total_tokens,
+    label_for_idle_turn_count,
+    idle_turn_count,
+    total_tokens_preferred,
+)
 
 
 def _count_answer_tokens(text: str) -> tuple[int, str]:
@@ -21,6 +38,8 @@ def _count_answer_tokens(text: str) -> tuple[int, str]:
 
 def make_total_token_usage(
     spans_by_example_id: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    benchmark: str = "",
 ) -> Callable[..., dict[str, Any]]:
     def total_token_usage(
         output: dict[str, Any],
@@ -28,30 +47,24 @@ def make_total_token_usage(
         input: dict[str, Any],
         example: Any = None,
     ) -> dict[str, Any]:
-        example_id = str(getattr(example, "id", "") or _as_dict(example).get("id") or "")
+        example_dict = _as_dict(example)
+        example_id = str(example_dict.get("id") or "")
+        metadata = example_dict.get("metadata") or {}
         spans = spans_by_example_id.get(example_id, [])
-        total, source = _sum_total_tokens(spans)
-        if total == 0.0:
-            output_dict = _task_output(output)
-            fallback = output_dict.get("total_token_usage") or output_dict.get("token_usage")
-            if isinstance(fallback, Mapping):
-                total = float((fallback.get("total") or 0) or 0)
-                source = "output.token_usage.total"
-            elif fallback is not None:
-                try:
-                    total = float(fallback)
-                    source = "output.total_token_usage"
-                except (TypeError, ValueError):
-                    pass
-        if total == 0:
-            label = "unmeasured"
-        elif total < 2000:
-            label = "low"
-        elif total < 10000:
-            label = "medium"
-        else:
-            label = "high"
-        return {"score": float(total), "label": label, "explanation": f"{total:.0f} tokens; {source}"}
+        total, source = total_tokens_preferred(
+            spans=spans,
+            benchmark=benchmark,
+            input_payload=input,
+            output=output,
+            example_metadata=metadata if isinstance(metadata, Mapping) else {},
+        )
+        if total <= 0:
+            return _unscored(f"token usage is missing; {source}")
+        return {
+            "score": total,
+            "label": label_for_total_tokens(total),
+            "explanation": source,
+        }
 
     total_token_usage.__name__ = "total_token_usage"
     total_token_usage.__qualname__ = "total_token_usage"
@@ -78,8 +91,8 @@ def make_cost(spans_by_example_id: Mapping[str, Sequence[Mapping[str, Any]]]) ->
                 except (TypeError, ValueError):
                     pass
         if total == 0:
-            label = "unmeasured"
-        elif total < 0.01:
+            return _unscored(f"cost is missing; {source}")
+        if total < 0.01:
             label = "low"
         elif total < 0.1:
             label = "medium"
@@ -113,11 +126,15 @@ def make_answer_cost() -> Callable[..., dict[str, Any]]:
 def make_turn_count() -> Callable[..., dict[str, Any]]:
     def turn_count(output: dict[str, Any], expected: dict[str, Any], input: dict[str, Any]) -> dict[str, Any]:
         output_dict = _task_output(output)
-        raw = output_dict.get("turns") or output_dict.get("turn_count") or 0
+        raw = output_dict.get("turns")
+        if raw is None:
+            raw = output_dict.get("turn_count")
+        if raw is None:
+            return _unscored("turn_count is missing from task output")
         try:
             count = int(raw)
         except (TypeError, ValueError):
-            count = 0
+            return _unscored(f"turn_count is not numeric: {raw!r}")
         if count == 0:
             label = "zero"
         elif count < 3:
@@ -133,24 +150,91 @@ def make_turn_count() -> Callable[..., dict[str, Any]]:
     return turn_count
 
 
-def make_elapsed_time() -> Callable[..., dict[str, Any]]:
-    def elapsed_time(output: dict[str, Any], expected: dict[str, Any], input: dict[str, Any]) -> dict[str, Any]:
+def make_idle_turn_count() -> Callable[..., dict[str, Any]]:
+    def idle_turn_count_metric(
+        output: dict[str, Any],
+        expected: dict[str, Any],
+        input: dict[str, Any],
+    ) -> dict[str, Any]:
+        del expected, input
+        count, source = idle_turn_count(output)
+        if count is None:
+            return _unscored(source)
+        return {
+            "score": float(count),
+            "label": label_for_idle_turn_count(count),
+            "explanation": source,
+        }
+
+    idle_turn_count_metric.__name__ = "idle_turn_count"
+    idle_turn_count_metric.__qualname__ = "idle_turn_count"
+    return idle_turn_count_metric
+
+
+def make_wall_time(
+    spans_by_example_id: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+) -> Callable[..., dict[str, Any]]:
+    spans_map = spans_by_example_id or {}
+
+    def wall_time(
+        output: dict[str, Any],
+        expected: dict[str, Any],
+        input: dict[str, Any],
+        example: Any = None,
+    ) -> dict[str, Any]:
         output_dict = _task_output(output)
         raw = output_dict.get("elapsed_seconds") or output_dict.get("elapsed_time") or output_dict.get("duration")
+        source = "task output"
+        if raw is None:
+            example_id = str(getattr(example, "id", "") or _as_dict(example).get("id") or "")
+            derived = _elapsed_seconds_from_spans(spans_map.get(example_id, []))
+            if derived is not None:
+                raw, source = derived
+        if raw is None:
+            return _unscored("wall_time is missing from task output and spans")
         try:
             seconds = float(raw)
         except (TypeError, ValueError):
-            seconds = 0.0
+            return _unscored(f"wall_time is not numeric: {raw!r}")
         if seconds <= 0:
-            label = "unmeasured"
-        elif seconds < 5:
+            return _unscored(f"wall_time is not a positive duration: {seconds}")
+        if seconds < 5:
             label = "fast"
         elif seconds < 30:
             label = "medium"
         else:
             label = "slow"
-        return {"score": float(seconds), "label": label, "explanation": f"{seconds:.3f} second(s)"}
+        return {
+            "score": float(seconds),
+            "label": label,
+            "explanation": f"{seconds:.3f} second(s); {source}",
+        }
 
-    elapsed_time.__name__ = "elapsed_time"
-    elapsed_time.__qualname__ = "elapsed_time"
-    return elapsed_time
+    wall_time.__name__ = "wall_time"
+    wall_time.__qualname__ = "wall_time"
+    return wall_time
+
+
+# Backward-compatible alias for older configs and notebooks.
+make_elapsed_time = make_wall_time
+
+
+def make_conciseness(llm: LLM) -> Callable[..., dict[str, Any]]:
+    from a2e.evals.metrics import ConcisenessEvaluator
+
+    return _dual_mode(
+        metric_name="conciseness",
+        build_structured=lambda llm_: ConcisenessEvaluator(llm=llm_),
+        structured_input=lambda output, expected, input_: {
+            "input": _instruction(input_),
+            "output": _final_answer(output),
+        },
+        text_definition="Is the agent's output concise, with only necessary information?",
+        choices=("concise", "verbose"),
+        positive="concise",
+        text_context=lambda output, expected, input_: {
+            "Question": _instruction(input_),
+            "Agent answer": _final_answer(output),
+        },
+        llm=llm,
+    )

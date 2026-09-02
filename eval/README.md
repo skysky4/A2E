@@ -61,11 +61,10 @@ A<sup>2</sup>E supports evaluation across multiple dimensions of agent behavior:
 | Metric | Description |
 |--------|-------------|
 | `plan` | Evaluates planning quality and decision-making behavior |
-| `skill` | Measures agent execution capabilities |
-| `memory` | Analyzes memory usage and context management |
+| `memory` | Legacy alias for faithfulness checks under `safety` |
 | `tool` | Evaluates tool selection and tool execution behavior |
 | `correct` | Measures final task completion correctness |
-| `efficiency` | Analyzes execution efficiency and resource usage |
+| `efficiency` | Analyzes execution efficiency, resource usage, and answer conciseness |
 | `safety` | Evaluates safety-related behaviors |
 
 For example, to evaluate only the planning capability:
@@ -85,8 +84,7 @@ The available evaluation modules are:
 
 ```text
 plan
-skill
-memory
+memory    # legacy alias → safety (faithfulness)
 tool
 correct
 efficiency
@@ -95,3 +93,14 @@ safety
 
 Each evaluation module operates on recorded agent trajectories and produces
 metrics for analyzing agent behavior and comparing different agent systems.
+
+## Metric matrix (26 metrics)
+
+The current evaluation matrix defines **26 deduped metrics** (15 LLM + 11 CODE)
+across plan, tool, correct, efficiency, and safety. For plain-language definitions,
+implementation notes, benchmark lineage, and diagnostic guidance, see:
+
+- **English:** [METRICS_MATRIX_README.md](METRICS_MATRIX_README.md)
+- **中文:** [METRICS_MATRIX_README_zh.md](METRICS_MATRIX_README_zh.md)
+
+Catalog: `metrics_catalog.json` · Groups: `core/metric_groups.py`

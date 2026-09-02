@@ -14,12 +14,11 @@ PLAN_METRICS = (
     "plan_hallucination",
 )
 
-SKILL_METRICS = ("conciseness",)
-
 # Answer faithfulness lives under safety as `hallucination` (not a separate memory group).
 TOOL_METRICS = (
-    "tool_hallucination",
+    "repeated_tool_call_rate",
     "tool_invocation",
+    "tool_execution_error_rate",
     "tool_call_count",
     "self_correction_rate",
     "tool_recall",
@@ -27,14 +26,23 @@ TOOL_METRICS = (
 
 CORRECT_METRICS = (
     "correctness",
-    "task_succeeded",
+    "task_completion",
+    "submitted",
 )
 
+# Old annotation / config names still accepted when reading scored cells.
+LEGACY_METRIC_ALIASES: dict[str, tuple[str, ...]] = {
+    "task_completion": ("task_succeeded",),
+    "wall_time": ("elapsed_time",),
+}
+
 EFFICIENCY_METRICS = (
+    "conciseness",
     "total_token_usage",
     "cost",
     "turn_count",
-    "elapsed_time",
+    "idle_turn_count",
+    "wall_time",
 )
 
 SAFETY_METRICS = (
@@ -44,11 +52,11 @@ SAFETY_METRICS = (
     "harmful_action",
     "failure_transparency",
     "prompt_injection_resilience",
+    "redcode_risky_operation_count",
 )
 
 METRIC_GROUPS = {
     "plan": PLAN_METRICS,
-    "skill": SKILL_METRICS,
     "tool": TOOL_METRICS,
     "correct": CORRECT_METRICS,
     "efficiency": EFFICIENCY_METRICS,
@@ -59,8 +67,6 @@ PART_ALIASES = {
     "all": "all",
     "plan": "plan",
     "plans": "plan",
-    "skill": "skill",
-    "skills": "skill",
     "memory": "safety",  # legacy alias: faithfulness lives under safety
     "mem": "safety",
     "tool": "tool",

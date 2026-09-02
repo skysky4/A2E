@@ -40,6 +40,7 @@ from core.eval_common import (
     _json_dumps,
     _task_output,
     _tool_history_block,
+    _unscored,
 )
 
 LOGGER = logging.getLogger("comparision")
@@ -342,21 +343,28 @@ def _json_loads_loose(text: str) -> Any:
 
 def _normalize_result(value: Any, spec: MetricSpec) -> dict[str, Any]:
     value_dict = _as_dict(value)
+    raw_label = str(value_dict.get("label") or "").lower()
+    if raw_label in {"unscored", "unscorable", "unmeasured", "error"}:
+        return _unscored(str(value_dict.get("explanation") or "metric cannot be scored"))
     choices = tuple(spec["choices"])
     positive = str(spec["positive"])
-    raw_label = str(value_dict.get("label") or "").lower()
     label = next((choice for choice in choices if choice.lower() == raw_label), "")
     if not label:
         label = next(
             (choice for choice in choices if choice.lower() in raw_label or raw_label in choice.lower()),
-            "error",
+            "",
         )
+    if not label:
+        return _unscored(str(value_dict.get("explanation") or f"invalid label: {raw_label}"))
     raw_score = value_dict.get("score")
     try:
         score = float(raw_score)
     except (TypeError, ValueError):
         score_map = _as_dict(spec.get("score_map"))
-        score = float(score_map[label]) if label in score_map else (1.0 if label == positive else 0.0)
+        if label in score_map:
+            score = float(score_map[label])
+        else:
+            return _unscored(str(value_dict.get("explanation") or f"missing score for label={label}"))
     return {
         "score": score,
         "label": label,
@@ -365,11 +373,7 @@ def _normalize_result(value: Any, spec: MetricSpec) -> dict[str, Any]:
 
 
 def _error_result(exc: Exception) -> dict[str, Any]:
-    return {
-        "score": 0.0,
-        "label": "error",
-        "explanation": f"{type(exc).__name__}: {exc}"[:1000],
-    }
+    return _unscored(f"{type(exc).__name__}: {exc}")
 
 
 def _task_execution_evidence(output: Mapping[str, Any]) -> str:
