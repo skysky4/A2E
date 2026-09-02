@@ -12,6 +12,7 @@ from openinference.instrumentation import (
     TraceConfig,
 )
 from openinference.instrumentation.smolagents._wrappers import (
+    _ModelStreamWrapper,
     _ModelWrapper,
     _RunWrapper,
     _StepWrapper,
@@ -28,6 +29,7 @@ class SmolagentsInstrumentor(BaseInstrumentor):  # type: ignore
         "_original_step_stream_methods",
         "_original_tool_call_method",
         "_original_model_generate_methods",
+        "_original_model_generate_stream_methods",
         "_original_executor",
         "_tracer",
     )
@@ -51,7 +53,7 @@ class SmolagentsInstrumentor(BaseInstrumentor):  # type: ignore
             config=config,
         )
 
-        run_wrapper = _RunWrapper(tracer=self._tracer)
+        run_wrapper = _RunWrapper(tracer=self._tracer)  # type: ignore[arg-type]
         self._original_run_method = getattr(MultiStepAgent, "run", None)
         wrap_function_wrapper(
             "smolagents",
@@ -60,7 +62,7 @@ class SmolagentsInstrumentor(BaseInstrumentor):  # type: ignore
         )
 
         self._original_step_stream_methods: Optional[dict[type, Optional[Callable[..., Any]]]] = {}
-        step_wrapper = _StepWrapper(tracer=self._tracer)
+        step_wrapper = _StepWrapper(tracer=self._tracer)  # type: ignore[arg-type]
         for step_cls in [CodeAgent, ToolCallingAgent]:
             self._original_step_stream_methods[step_cls] = getattr(step_cls, "_step_stream", None)
             wrap_function_wrapper(
@@ -70,15 +72,18 @@ class SmolagentsInstrumentor(BaseInstrumentor):  # type: ignore
             )
 
         self._original_model_generate_methods: Optional[dict[type, Callable[..., Any]]] = {}
+        self._original_model_generate_stream_methods: Optional[dict[type, Callable[..., Any]]] = {}
 
-        exported_model_subclasses = [
-            attr
-            for _, attr in vars(smolagents).items()
-            if isinstance(attr, type) and issubclass(attr, models.Model)
-        ]
+        exported_model_subclasses = list(
+            dict.fromkeys(
+                attr
+                for _, attr in vars(smolagents).items()
+                if isinstance(attr, type) and issubclass(attr, models.Model)
+            )
+        )
 
         for model_subclass in exported_model_subclasses:
-            model_subclass_wrapper = _ModelWrapper(tracer=self._tracer)
+            model_subclass_wrapper = _ModelWrapper(tracer=self._tracer)  # type: ignore[arg-type]
 
             self._original_model_generate_methods[model_subclass] = getattr(
                 model_subclass, "generate"
@@ -88,6 +93,15 @@ class SmolagentsInstrumentor(BaseInstrumentor):  # type: ignore
                 model_subclass.__name__ + ".generate",
                 model_subclass_wrapper,
             )
+            if original_generate_stream := model_subclass.__dict__.get("generate_stream"):
+                self._original_model_generate_stream_methods[model_subclass] = (
+                    original_generate_stream
+                )
+                wrap_function_wrapper(
+                    "smolagents",
+                    model_subclass.__name__ + ".generate_stream",
+                    _ModelStreamWrapper(tracer=self._tracer),  # type: ignore[arg-type]
+                )
         self._original_executor: Optional[type] = None
 
         module: ModuleType = import_module("smolagents.local_python_executor")
@@ -110,7 +124,7 @@ class SmolagentsInstrumentor(BaseInstrumentor):  # type: ignore
 
         setattr(module, "ThreadPoolExecutor", _make_context_aware_executor)
 
-        tool_call_wrapper = _ToolCallWrapper(tracer=self._tracer)
+        tool_call_wrapper = _ToolCallWrapper(tracer=self._tracer)  # type: ignore[arg-type]
         self._original_tool_call_method = getattr(Tool, "__call__", None)
         wrap_function_wrapper(
             "smolagents",
@@ -137,6 +151,18 @@ class SmolagentsInstrumentor(BaseInstrumentor):  # type: ignore
             ) in self._original_model_generate_methods.items():
                 setattr(model_subclass, "generate", original_model_generate_method)
             self._original_model_generate_methods = None
+
+        if self._original_model_generate_stream_methods is not None:
+            for (
+                model_subclass,
+                original_model_generate_stream_method,
+            ) in self._original_model_generate_stream_methods.items():
+                setattr(
+                    model_subclass,
+                    "generate_stream",
+                    original_model_generate_stream_method,
+                )
+            self._original_model_generate_stream_methods = None
 
         if self._original_tool_call_method is not None:
             Tool.__call__ = self._original_tool_call_method

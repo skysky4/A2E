@@ -1,0 +1,15 @@
+schema_version: 1
+id: terminal-bench-2.1
+kind: sandbox
+loader:
+  entrypoint: ageneval.task.datasets.terminal_bench_2_1.loader:load_terminal_bench_2_1_tasks
+  accepts: [n, task_ids, exclude_categories]
+binding:
+  entrypoint: ageneval.task.datasets.terminal_bench_2_1.binding:build_terminal_bench_2_1_binding
+grader:
+  entrypoint: ageneval.task.datasets.terminal_bench_2_1.grader:GRADER
+setup:
+  entrypoint: ageneval.task.datasets.terminal_bench_2_1.loader:setup_terminal_bench_2_1
+defaults: {max_turns: 10000, max_tokens: 4096, llm_timeout: 180, run_deadline: 3600}
+agent_overrides: {max_turns: 10000, max_steps: 10000}
+resources: {docker: true, network: true}

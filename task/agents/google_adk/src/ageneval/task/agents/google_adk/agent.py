@@ -13,15 +13,20 @@ SDK is absent.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, ToolCall
+from ageneval.task.core import (
+    AgentBinding,
+    AgentRunner,
+    TaskInput,
+    TaskTrace,
+    ToolCall,
+    run_sync_in_daemon_thread,
+)
 
 # Unified model: default to .env's A2E_MODEL (a non-reasoning instruct model);
 # fall back to qwen-plus.
@@ -97,6 +102,10 @@ class GoogleADKAgent(AgentRunner):
                 api_base=api_base,
                 api_key=api_key,
                 max_tokens=_max_tokens(),
+                # Some OpenAI-compatible gateways advertise this optional
+                # LiteLLM parameter but reject it for GPT-5.6-sol. It is not
+                # needed by the benchmark, so remove it unconditionally.
+                additional_drop_params=["prompt_cache_retention"],
             )
             tools = _build_function_tools(self.binding, task, recorder)
             agent = Agent(
@@ -124,8 +133,7 @@ class GoogleADKAgent(AgentRunner):
                 user_text = (
                     "You have tools and MUST call them via function calling "
                     f"before answering: {names}. Do not answer from memory "
-                    "when a lookup tool exists.\n\n"
-                    + task.instruction
+                    "when a lookup tool exists.\n\n" + task.instruction
                 )
             message = genai_types.Content(
                 role="user",
@@ -200,17 +208,52 @@ def _build_function_tools(
     We attach the dataset JSON-Schema properties as keyword-only parameters
     so the model sees real fields (not a single ``arguments_json`` blob).
     """
+    from ageneval.task.core.native_tools import (
+        attach_json_schema_signature,
+        invoke_binding_tool,
+        openai_function,
+        parameters_block,
+    )
     from google.adk.tools import FunctionTool
-
-    from ageneval.task.core.native_tools import make_kwargs_tool
 
     tools: list[Any] = []
     for schema in binding.tool_schemas:
+        fn = openai_function(schema)
+        name = str(fn.get("name") or "tool")
+        description = str(fn.get("description") or f"Invoke the {name} tool.")
+        parameters = parameters_block(schema)
+
+        def _make_async_tool(
+            tool_name: str,
+            tool_description: str,
+            tool_parameters: dict[str, Any],
+        ) -> Any:
+            async def _tool(**kwargs: Any) -> str:
+                # Google ADK invokes synchronous FunctionTool callables directly
+                # on its shared event loop. Sandbox tools may block for minutes,
+                # freezing every concurrent task and preventing wait_for
+                # deadlines from firing. Publish a real coroutine while keeping
+                # the dataset's model-facing signature intact.
+                return await run_sync_in_daemon_thread(
+                    invoke_binding_tool,
+                    tool_name=tool_name,
+                    kwargs=kwargs,
+                    binding=binding,
+                    task=task,
+                    recorder=recorder,
+                    thread_name=f"a2e-google-adk-tool-{tool_name}-{task.task_id}",
+                )
+
+            return attach_json_schema_signature(
+                _tool,
+                name=tool_name,
+                description=tool_description,
+                parameters=tool_parameters,
+            )
+
         tools.append(
             FunctionTool(
-                func=make_kwargs_tool(
-                    schema=schema, binding=binding, task=task, recorder=recorder
-                )
+                func=_make_async_tool(name, description, parameters),
             )
         )
     return tools

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from ageneval.task.core.dataset import TaskInput
+from ageneval.task.core.grading import GradeReport, GraderSpec
 
 logger = logging.getLogger(__name__)
 
@@ -130,3 +131,63 @@ def score_terminal_bench_2(task: TaskInput, sandbox, model_patch: str) -> dict[s
     logger.info("terminal-bench-2 score %s: resolved=%s reward=%r",
                 task.task_id, resolved, reward_raw)
     return report
+
+
+def _reward_number(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None and value != "" else None
+    except (TypeError, ValueError):
+        return None
+
+
+def grade_terminal_bench_2_output(
+    output: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+    input: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> GradeReport:
+    """Build canonical platform metrics from one completed verifier result."""
+    del expected, input, metadata
+    resolved = bool(output.get("resolved"))
+    score = float(resolved)
+    reward = _reward_number(output.get("tb_reward"))
+    return GradeReport(
+        score=score,
+        passed=resolved,
+        metrics={"tb_resolved": score, "tb_reward": reward},
+        metadata={
+            key: output.get(key)
+            for key in (
+                "status",
+                "tb_tests_total",
+                "tb_tests_passed",
+                "tb_tests_failed",
+                "tb_verifier_files",
+                "tb_verifier_exit",
+            )
+        },
+        error=output.get("score_error"),
+        explanation="Terminal-Bench 2.0 reward from its live held-out verifier.",
+        official=True,
+        source="laude-institute/terminal-bench-2",
+        version="2.0",
+    )
+
+
+GRADER = GraderSpec(
+    id="tb_resolved",
+    grade=score_terminal_bench_2,
+    summarize=grade_terminal_bench_2_output,
+    mode="inline",
+    official=True,
+    source="laude-institute/terminal-bench-2",
+    version="2.0",
+)
+post_platform_grade = grade_terminal_bench_2_output
+
+__all__ = [
+    "GRADER",
+    "grade_terminal_bench_2_output",
+    "post_platform_grade",
+    "score_terminal_bench_2",
+]

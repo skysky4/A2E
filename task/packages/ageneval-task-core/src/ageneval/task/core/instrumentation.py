@@ -109,7 +109,13 @@ def _install_instrumentor(framework: Framework, provider: TracerProvider) -> Non
             exc,
         )
         return
-    getattr(module, class_name)().instrument(tracer_provider=provider)
+    instrument_kwargs: dict[str, object] = {"tracer_provider": provider}
+    if framework == "crewai":
+        instrument_kwargs.update(
+            use_event_listener=True,
+            create_llm_spans=True,
+        )
+    getattr(module, class_name)().instrument(**instrument_kwargs)
 
 
 def shutdown(provider: TracerProvider) -> None:

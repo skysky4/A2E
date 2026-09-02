@@ -1,0 +1,22 @@
+schema_version: 1
+id: glm-5.3
+provider: zai
+model: glm-5.3
+upstream_protocol: openai_chat_completions
+connection:
+  base_url_env: OPENAI_API_BASE
+  api_key_env: OPENAI_API_KEY
+capabilities:
+  tools: true
+  streaming: true
+  vision: false
+  structured_output: false
+concurrency:
+  group: zai-glm
+  max_sessions: 32
+gateway:
+  interfaces:
+    - openai_chat_completions
+    - anthropic_messages
+middleware:
+  - glm_tool_call_compat

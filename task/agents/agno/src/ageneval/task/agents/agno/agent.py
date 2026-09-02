@@ -14,13 +14,19 @@ absent.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, ToolCall
+from ageneval.task.core import (
+    AgentBinding,
+    AgentRunner,
+    TaskInput,
+    TaskTrace,
+    ToolCall,
+    run_sync_in_daemon_thread,
+)
 
 # Unified model: default to .env's A2E_MODEL (a non-reasoning instruct model);
 # fall back to qwen-plus.
@@ -44,10 +50,9 @@ _LLM_MAX_RETRIES = int(os.environ.get("A2E_LLM_MAX_RETRIES", "2"))
 # finish_reason=length with empty content and zero tools.
 _MAX_TOKENS = _budget_tokens()
 
-# Whole-agent wall-clock deadline. agno's ``Agent.run`` is a *synchronous* call
-# run via ``asyncio.to_thread``; a slow sandbox tool (e.g. compiling a C-extension
-# library or running its test suite) can keep a single tool call busy for minutes,
-# so a few of them exhaust any task budget. When this deadline fires we DON'T
+# Whole-agent wall-clock deadline. A slow sandbox tool (e.g. compiling a
+# C-extension library or running its test suite) can keep a single tool call busy
+# for minutes, so a few of them exhaust any task budget. When this deadline fires we DON'T
 # discard the work: the shared tool ``recorder`` already holds every call made so
 # far, so we return a *partial* trajectory (status="timeout") instead of letting
 # an outer ``asyncio.wait_for`` hard-cancel the thread and lose everything. Keep
@@ -104,6 +109,18 @@ class AgnoAgent(AgentRunner):
     async def run(self, task: TaskInput) -> TaskTrace:
         start = time.perf_counter()
         recorder: list[ToolCall] = []
+        task_timeout = task.metadata.get("agent_timeout_sec")
+        # Benchmarks such as Terminal-Bench define the authoritative per-task
+        # wall-clock budget. Keep the configured A2E deadline as the fallback
+        # for datasets that do not provide one. Leave a small margin so Agno's
+        # partial trace is returned before SandboxScoringRunner's outer timeout
+        # cancels this coroutine at the official boundary.
+        run_deadline = self.run_deadline
+        if task_timeout is not None:
+            configured_timeout = float(task_timeout)
+            if configured_timeout <= 0:
+                raise ValueError("agent_timeout_sec must be positive")
+            run_deadline = max(0.001, configured_timeout - 0.5)
         try:
             from agno.agent import Agent
             from agno.models.openai.like import OpenAILike
@@ -142,18 +159,14 @@ class AgnoAgent(AgentRunner):
                 tool_call_limit=self.max_turns,
             )
 
-            # agno's ``Agent.run`` is synchronous; run it off the event loop so
-            # the surrounding asyncio runner is not blocked (mirrors smolagents).
-            # Bound it by a wall-clock deadline: a slow sandbox tool can block one
-            # call for minutes. On timeout the worker thread keeps running (Python
-            # threads can't be cancelled) but ``recorder`` already holds its work,
-            # so we return a partial trajectory rather than losing it — the outer
-            # SandboxScoringRunner still extracts the diff + score while the
-            # container is alive, and tears the container down (killing the thread).
+            # Use Agno's native async API so timeout cancellation propagates into
+            # the SDK. Agent.run() via asyncio.to_thread() leaves non-cancellable
+            # default-executor workers behind and can keep the experiment process
+            # alive after every result has already been persisted.
             try:
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(agent.run, task.instruction),
-                    timeout=self.run_deadline,
+                    agent.arun(task.instruction),
+                    timeout=run_deadline,
                 )
             except asyncio.TimeoutError:
                 partial = tuple(recorder)
@@ -166,7 +179,7 @@ class AgnoAgent(AgentRunner):
                     final_answer=None,
                     elapsed_seconds=time.perf_counter() - start,
                     error=(
-                        f"agent exceeded {self.run_deadline:.0f}s deadline "
+                        f"agent exceeded {float(task_timeout or self.run_deadline):.0f}s deadline "
                         f"after {len(partial)} tool call(s)"
                     ),
                 )
@@ -265,15 +278,20 @@ def _build_function_tools(
         parameters = dict(fn.get("parameters") or {"type": "object", "properties": {}})
 
         def _make(tool_name: str):
-            def _tool(**kwargs: Any) -> str:
+            async def _tool(**kwargs: Any) -> str:
                 from ageneval.task.core.native_tools import invoke_binding_tool
 
-                return invoke_binding_tool(
+                # Binding tools are synchronous (often Docker-backed). Running
+                # them in a daemon worker keeps Agno's event loop cancellable
+                # without reintroducing the default-executor shutdown hang.
+                return await run_sync_in_daemon_thread(
+                    invoke_binding_tool,
                     tool_name=tool_name,
                     kwargs=kwargs,
                     binding=binding,
                     task=task,
                     recorder=recorder,
+                    thread_name=f"a2e-agno-tool-{tool_name}-{task.task_id}",
                 )
 
             return _tool

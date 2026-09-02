@@ -48,9 +48,11 @@ def _docker_available() -> bool:
         return False
 
 
-def _labeled_container_ids() -> set[str]:
-    label_key = A2E_SANDBOX_LABEL.split("=", 1)[0]
-    res = _run(["docker", "ps", "-aq", "--filter", f"label={label_key}"], timeout=30)
+def _labeled_container_ids(labels: dict[str, str] | None = None) -> set[str]:
+    filters = ["--filter", f"label={A2E_SANDBOX_LABEL}"]
+    for key, value in (labels or {}).items():
+        filters += ["--filter", f"label={key}={value}"]
+    res = _run(["docker", "ps", "-aq", *filters], timeout=30)
     return {cid for cid in res.stdout.split() if cid}
 
 
@@ -75,6 +77,8 @@ def sweep_sandbox_containers(
     *,
     include_image_orphans: bool = True,
     image_prefixes: Sequence[str] = _A2E_IMAGE_PREFIXES,
+    campaign_id: str | None = None,
+    trial_id: str | None = None,
 ) -> list[str]:
     """Force-remove leftover A2E sandbox containers; return removed ids.
 
@@ -88,8 +92,15 @@ def sweep_sandbox_containers(
     if not _docker_available():
         return []
     try:
-        targets = _labeled_container_ids()
-        if include_image_orphans:
+        labels = {}
+        if campaign_id:
+            labels["a2e.campaign_id"] = campaign_id
+        if trial_id:
+            labels["a2e.trial_id"] = trial_id
+        targets = _labeled_container_ids(labels)
+        # Image-prefix migration cleanup is necessarily global and therefore
+        # must never run during a scoped Campaign cleanup.
+        if include_image_orphans and not labels:
             targets |= _image_orphan_ids(image_prefixes)
     except Exception as exc:
         logger.warning("sandbox sweep: could not list containers: %s", exc)

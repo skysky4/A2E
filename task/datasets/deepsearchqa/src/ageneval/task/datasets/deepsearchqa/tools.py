@@ -6,16 +6,14 @@ DeepSearchQA is an open-web benchmark. Problems name the source sites
 it must not substitute Wikipedia (or any other site) for them.
 ``open_url`` fetches whatever URL the agent or search result provides.
 
-The cluster has no direct egress. ``tau_env.sh`` clears ``http_proxy`` so
-localhost / the model gateway stay off a broken proxy. That means a shell
-``source setup_proxy.sh`` does **not** automatically reach this module:
-this file installs the institutional proxy on the opener itself.
+Network routing is explicit. The tools honor the standard HTTP(S) proxy
+variables or ``A2E_WEB_PROXY`` when one is configured; otherwise they connect
+directly. A workstation must never silently inherit a cluster-only proxy.
 """
 
 from __future__ import annotations
 
 import html
-import json
 import logging
 import os
 import re
@@ -34,7 +32,6 @@ _UA = (
 )
 _TIMEOUT = 15
 _SEARCH_TIMEOUT = 12
-_CLUSTER_PROXY = "http://httpproxy-headless.kubebrain.svc.pjlab.local:3128"
 # In-process cache: same canonical URL is not fetched again (404 and
 # timeouts included). This is the network-side fix for "retry the same URL".
 _PAGE_CACHE: dict[str, dict[str, Any]] = {}
@@ -45,11 +42,11 @@ def _proxy_url() -> str | None:
         val = (os.environ.get(key) or "").strip()
         if val:
             return val
-    return os.environ.get("A2E_WEB_PROXY", _CLUSTER_PROXY)
+    return (os.environ.get("A2E_WEB_PROXY") or "").strip() or None
 
 
 def _ensure_process_proxy() -> str | None:
-    """Put the cluster proxy into this process even if tau_env.sh wiped it."""
+    """Apply an explicitly configured web proxy to this process."""
     proxy = _proxy_url()
     if not proxy:
         return None
@@ -69,10 +66,12 @@ def _ensure_process_proxy() -> str | None:
 
 def _opener() -> urllib.request.OpenerDirector:
     proxy = _ensure_process_proxy()
-    handlers: list[urllib.request.BaseHandler] = []
     if proxy:
-        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    return urllib.request.build_opener(*handlers)
+        handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+    else:
+        # An empty handler prevents urllib from discovering an implicit proxy.
+        handler = urllib.request.ProxyHandler({})
+    return urllib.request.build_opener(handler)
 
 
 def get_deepsearchqa_tool_schemas() -> list[dict[str, Any]]:
@@ -174,7 +173,7 @@ def _request(
     try:
         with _opener().open(req, timeout=timeout) as resp:
             return resp.read()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         if last is not None:
             raise last from exc
         raise
@@ -254,7 +253,7 @@ def _web_search(query: str) -> dict[str, Any]:
         except urllib.error.HTTPError as exc:
             errors.append(f"{source}: HTTP {exc.code}")
             continue
-        except Exception as exc:  # noqa: BLE001 — requests.Timeout is not URLError
+        except Exception as exc:
             errors.append(f"{source}: {exc}")
             continue
         if hits:
@@ -273,7 +272,7 @@ class _TextExtractor(HTMLParser):
         self._skip = 0
         self._chunks: list[str] = []
 
-    def handle_starttag(self, tag: str, attrs) -> None:  # noqa: ANN001
+    def handle_starttag(self, tag: str, attrs) -> None:
         if tag in {"script", "style", "noscript"}:
             self._skip += 1
 
@@ -313,7 +312,7 @@ def _open_url(url: str) -> dict[str, Any]:
         }
         _PAGE_CACHE[target] = payload
         return payload
-    except Exception as exc:  # noqa: BLE001 — requests.Timeout is not URLError
+    except Exception as exc:
         payload = {"error": f"fetch failed: {exc}", "url": target}
         _PAGE_CACHE[target] = payload
         return payload
@@ -321,7 +320,7 @@ def _open_url(url: str) -> dict[str, Any]:
     parser = _TextExtractor()
     try:
         parser.feed(page)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         payload = {"error": f"html parse failed: {exc}", "url": target}
         _PAGE_CACHE[target] = payload
         return payload

@@ -8,7 +8,12 @@ Public API:
 """
 
 from ageneval.task.datasets.swe_bench.binding import build_swe_bench_binding
-from ageneval.task.datasets.swe_bench.grader import score_swe_bench
+from ageneval.task.datasets.swe_bench.grader import (
+    GRADER,
+    grade_swe_bench_output,
+    post_platform_grade,
+    score_swe_bench,
+)
 from ageneval.task.datasets.swe_bench.loader import (
     SWEBenchDataset,
     load_swe_bench_tasks,
@@ -16,9 +21,12 @@ from ageneval.task.datasets.swe_bench.loader import (
 )
 
 __all__ = [
+    "GRADER",
     "SWEBenchDataset",
     "build_swe_bench_binding",
+    "grade_swe_bench_output",
     "load_swe_bench_tasks",
+    "post_platform_grade",
     "score_swe_bench",
     "setup_swe_bench",
 ]

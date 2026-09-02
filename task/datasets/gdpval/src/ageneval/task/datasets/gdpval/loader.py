@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
 
 from ageneval.task.core.dataset import Dataset, TaskInput
 
@@ -33,7 +33,19 @@ _HF_ID = "openai/gdpval"
 # Cap how much rubric text we stash into expected_outputs (the LLM judge hint).
 _MAX_RUBRIC_CHARS = 6000
 _MAX_ATTACH_CHARS = 12000
-_ATTACH_DIR = Path(os.environ.get("A2E_GDPVAL_FILES_DIR", "/root/A2E/.a2e-data-tau-fix/gdpval-files"))
+
+
+def _attachments_dir() -> Path:
+    configured = (os.environ.get("A2E_GDPVAL_FILES_DIR") or "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    cache_home = Path(
+        os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache"
+    ).expanduser()
+    return cache_home / "a2e" / "gdpval-files"
+
+
+_ATTACH_DIR = _attachments_dir()
 
 
 @dataclass
@@ -90,7 +102,7 @@ def _extract_file_text(path: Path, *, limit: int = _MAX_ATTACH_CHARS) -> str:
             reader = PdfReader(str(path))
             text = "\n".join((page.extract_text() or "") for page in reader.pages)
             return text[:limit]
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return f"[failed to extract {path.name}: {exc}]"[:200]
     return f"[binary attachment {path.name} ({path.stat().st_size} bytes) saved at {path}]"
 
@@ -99,8 +111,12 @@ def _fetch_reference_file(rel_path: str) -> Path | None:
     """Resolve a GDPval reference file from the local cache or the Hub."""
     rel = str(rel_path).lstrip("/")
     local = _ATTACH_DIR / rel
-    if local.is_file():
-        return local
+    try:
+        if local.is_file():
+            return local
+    except OSError as exc:
+        logger.warning("GDPval attachment cache %s is inaccessible (%s)", local, exc)
+        return None
     if os.environ.get("A2E_GDPVAL_FILES", "1") == "0":
         return None
     try:
@@ -114,7 +130,7 @@ def _fetch_reference_file(rel_path: str) -> Path | None:
         )
         fetched = Path(path)
         return fetched if fetched.is_file() else None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("GDPval attachment %s unavailable (%s)", rel, str(exc)[:160])
         return None
 

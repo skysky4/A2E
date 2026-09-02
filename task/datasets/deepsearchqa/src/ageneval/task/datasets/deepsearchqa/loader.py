@@ -60,7 +60,7 @@ def load_deepsearchqa_tasks(
 ) -> DeepSearchQADataset:
     """Load DeepSearchQA. Falls back to the vendored sample if HF is unreachable.
 
-    ``answer_type`` is stored on the task for the evaluator only — the binding
+    ``answer_type`` is stored on the task for the benchmark grader only — the binding
     never puts it in the agent prompt (dataset-card requirement).
     """
     if os.environ.get("A2E_DEEPSEARCH_VENDOR", "0") == "1":

@@ -21,4 +21,4 @@ export NO_PROXY="$no_proxy"
 cd "$task_dir"
 exec uv run --frozen python examples/run_experiment.py \
   --dataset tau-bench --agent agno --model qwen-max \
-  --evaluators tool_recall,llm_judge --domain retail
+  --domain retail

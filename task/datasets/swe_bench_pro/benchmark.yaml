@@ -1,0 +1,17 @@
+schema_version: 1
+id: swe-bench-pro
+kind: sandbox
+loader:
+  entrypoint: ageneval.task.datasets.swe_bench_pro.loader:load_swe_bench_pro_tasks
+  defaults: {variant: swe-bench-pro}
+  accepts: [variant, n, split, instance_ids]
+  argument_map: {task_ids: instance_ids}
+binding:
+  entrypoint: ageneval.task.datasets.swe_bench_pro.binding:build_swe_bench_pro_binding
+grader:
+  entrypoint: ageneval.task.datasets.swe_bench_pro.grader:GRADER
+setup:
+  entrypoint: ageneval.task.datasets.swe_bench_pro.grader:setup_swe_bench_pro
+defaults: {max_turns: 40, max_tokens: 4096, llm_timeout: 180, run_deadline: 3600}
+agent_overrides: {max_turns: 40, max_steps: 40}
+resources: {docker: true, network: true}

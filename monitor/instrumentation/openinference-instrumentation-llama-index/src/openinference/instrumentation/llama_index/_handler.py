@@ -176,6 +176,9 @@ STREAMING_IN_PROGRESS_EVENTS = (
     StreamChatDeltaReceivedEvent,
 )
 
+_STREAMING_SPAN_SWEEP_INTERVAL_SECONDS = 0.1
+_MAX_PENDING_STREAMING_SPANS = 1024
+
 if LLAMA_INDEX_VERSION < (0, 10, 44):
 
     class ExceptionEvent:  # Dummy substitute
@@ -912,21 +915,49 @@ class _QueueItem:
 class _ExportQueue:
     """
     Container for spans that have ended but are waiting for streaming events. The
-    list is periodically swept to evict items that are no longer active or have not
-    been updated for over 60 seconds.
+    list is periodically swept to evict items that are no longer active. Active
+    streams are ended by their finish, exception, or cancellation event; silence is
+    not treated as proof that a stream has ended.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        max_pending_spans: int = _MAX_PENDING_STREAMING_SPANS,
+        sweep_interval_seconds: float = _STREAMING_SPAN_SWEEP_INTERVAL_SECONDS,
+        start_sweeper: bool = True,
+    ) -> None:
+        if max_pending_spans <= 0:
+            raise ValueError("max_pending_spans must be positive")
+        if sweep_interval_seconds <= 0:
+            raise ValueError("sweep_interval_seconds must be positive")
+        self._max_pending_spans = max_pending_spans
+        self._sweep_interval_seconds = sweep_interval_seconds
         self.lock: RLock = RLock()
         self.spans: Dict[str, _Span] = {}
         self.queue: "SimpleQueue[Optional[_QueueItem]]" = SimpleQueue()
         weakref.finalize(self, self.queue.put, END_OF_QUEUE)
-        Thread(target=self._sweep, args=(self.queue,), daemon=True).start()
+        if start_sweeper:
+            Thread(target=self._sweep, args=(self.queue,), daemon=True).start()
 
     def put(self, span: _Span) -> None:
+        queued_at = time()
+        evicted: list[_Span] = []
         with self.lock:
+            while len(self.spans) >= self._max_pending_spans:
+                oldest_id = next(iter(self.spans))
+                evicted.append(self.spans.pop(oldest_id))
             self.spans[span.id_] = span
-        self.queue.put(_QueueItem(time(), span))
+        self.queue.put(_QueueItem(queued_at, span))
+        for oldest in evicted:
+            logger.warning(
+                "Evicting oldest pending streaming span after reaching the %d-span limit: %s",
+                self._max_pending_spans,
+                oldest.id_,
+            )
+            oldest.end(
+                RuntimeError("pending streaming span limit reached before stream completion")
+            )
 
     def find(self, id_: str) -> Optional[_Span]:
         with self.lock:
@@ -934,29 +965,49 @@ class _ExportQueue:
 
     def _del(self, item: _QueueItem) -> None:
         with self.lock:
-            del self.spans[item.span.id_]
+            self.spans.pop(item.span.id_, None)
+
+    def _sweep_once(
+        self,
+        q: "SimpleQueue[Optional[_QueueItem]]",
+        swept_at: float,
+    ) -> bool:
+        """Sweep each currently queued span once.
+
+        Returns ``False`` when the queue received its shutdown sentinel.
+        Keeping one sweep as a separate operation makes timeout behavior
+        deterministic in tests while the production path still uses the
+        background sweeper.
+        """
+        while not q.empty():
+            if (item := q.get()) is END_OF_QUEUE:
+                return False
+            if swept_at == item.last_touched_at:
+                # We have gone through the whole list.
+                q.put(item)
+                break
+            span = item.span
+            if not span.active:
+                self._del(item)
+                continue
+            item.last_touched_at = swept_at
+            q.put(item)
+        return True
 
     def _sweep(self, q: "SimpleQueue[Optional[_QueueItem]]") -> None:
         while True:
-            t = time()
-            while not q.empty():
-                if (item := q.get()) is END_OF_QUEUE:
-                    return
-                if t == item.last_touched_at:
-                    # we have gone through the whole list
-                    q.put(item)
-                    break
-                span = item.span
-                if not span.active:
-                    self._del(item)
-                    continue
-                if t - span._last_updated_at > 60:
-                    span.end()
-                    self._del(item)
-                    continue
-                item.last_touched_at = t
-                q.put(item)
-            sleep(0.1)
+            if not self._sweep_once(q, time()):
+                return
+            sleep(self._sweep_interval_seconds)
+
+    def close(self) -> None:
+        with self.lock:
+            spans = list(self.spans.values())
+            self.spans.clear()
+        for span in spans:
+            if span.active:
+                span.end(RuntimeError("instrumentation stopped before stream completion"))
+        self.queue.put(END_OF_QUEUE)
 
 
 class _SpanHandler(BaseSpanHandler[_Span], extra="allow"):
@@ -980,6 +1031,9 @@ class _SpanHandler(BaseSpanHandler[_Span], extra="allow"):
         self._otel_tracer = tracer
         self._separate_trace_from_runtime_context = separate_trace_from_runtime_context
         self._export_queue = _ExportQueue()
+
+    def close(self) -> None:
+        self._export_queue.close()
 
     def new_span(
         self,

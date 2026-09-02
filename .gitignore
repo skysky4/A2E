@@ -50,7 +50,16 @@ ui/dist/
 # A2E runtime data (SQLite, traces, etc.)
 .a2e-data/
 .a2e-data*
+.a2e-*
+task/runs/*
+!task/runs/.gitkeep
+# Campaign files are local experiment inputs. Keep only the public example.
+task/campaigns/*
+!task/campaigns/example.yaml
 *.db
+*.db-shm
+*.db-wal
+/outputs/
 
 # Claude Code / project-unrelated tooling state
 .omc/
@@ -62,6 +71,7 @@ scripts/check_before_push.sh
 # Plan / notes scratch
 plan/
 notes/
+/tmp/
 
 # AI Tool
 AGENTS.md

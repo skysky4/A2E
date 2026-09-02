@@ -12,6 +12,23 @@ license = { text = "MIT" }
 readme = "README.md"
 dependencies = [
     "ageneval-task-core>=0.1.0",
+    "ageneval-model-gateway>=0.1.0",
+    "ageneval-task-runners>=0.1.0",
+    "ageneval-task-tau2>=0.1.0",
+    "ageneval-task-tau3>=0.1.0",
+    "ageneval-task-mmlu>=0.1.0",
+    "ageneval-task-gsm8k>=0.1.0",
+    "ageneval-task-humaneval>=0.1.0",
+    "ageneval-task-persistbench>=0.1.0",
+    "ageneval-task-qa-suite>=0.1.0",
+    "ageneval-task-traject-bench>=0.1.0",
+    "ageneval-task-deepsearchqa>=0.1.0",
+    "ageneval-task-swe-bench>=0.1.0",
+    "ageneval-task-swe-bench-pro>=0.1.0",
+    "ageneval-task-gdpval>=0.1.0",
+    "ageneval-task-terminal-bench-2>=0.1.0",
+    "ageneval-task-terminal-bench-2-1>=0.1.0",
+    "a2e-evals>=3.0.0",
     "openinference-instrumentation-autogen-agentchat>=0.1.0",
     "autogen-agentchat>=0.5.0",
     "autogen-ext[openai]>=0.5.0",
@@ -26,7 +43,25 @@ dependencies = [
 # `ageneval-task-core` is referenced by an in-repo relative path — this does
 # NOT violate the standalone red line (which forbids paths OUTSIDE the repo).
 [tool.uv.sources]
-ageneval-task-core = { path = "../../packages/ageneval-task-core" }
+ageneval-task-core = { path = "../../packages/ageneval-task-core", editable = true }
+ageneval-model-gateway = { path = "../../packages/ageneval-model-gateway", editable = true }
+ageneval-task-runners = { path = "../../runners", editable = true }
+ageneval-task-tau-bench = { path = "../../datasets/tau_bench", editable = true }
+ageneval-task-tau2 = { path = "../../datasets/tau2", editable = true }
+ageneval-task-tau3 = { path = "../../datasets/tau3", editable = true }
+ageneval-task-mmlu = { path = "../../datasets/mmlu", editable = true }
+ageneval-task-gsm8k = { path = "../../datasets/gsm8k", editable = true }
+ageneval-task-humaneval = { path = "../../datasets/humaneval", editable = true }
+ageneval-task-persistbench = { path = "../../datasets/persistbench", editable = true }
+ageneval-task-qa-suite = { path = "../../datasets/qa_suite", editable = true }
+ageneval-task-traject-bench = { path = "../../datasets/traject_bench", editable = true }
+ageneval-task-deepsearchqa = { path = "../../datasets/deepsearchqa", editable = true }
+ageneval-task-swe-bench = { path = "../../datasets/swe_bench", editable = true }
+ageneval-task-swe-bench-pro = { path = "../../datasets/swe_bench_pro", editable = true }
+ageneval-task-gdpval = { path = "../../datasets/gdpval", editable = true }
+ageneval-task-terminal-bench-2 = { path = "../../datasets/terminal_bench_2", editable = true }
+ageneval-task-terminal-bench-2-1 = { path = "../../datasets/terminal_bench_2_1", editable = true }
+a2e-evals = { path = "../../../eval/packages/a2e-evals", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ageneval"]

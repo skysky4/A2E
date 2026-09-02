@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One n=1 A2E run with official non-judge evaluators (gdpval-aa keeps llm_judge).
+# One n=1 A2E run using the benchmark's automatically selected primary grader.
 # Usage: run_n1.sh <agent> <dataset> [extra args...]
 set -euo pipefail
 agent="${1:?agent}"
@@ -29,16 +29,7 @@ fi
 cd /root/A2E/task
 
 case "$dataset" in
-  deepsearchqa) evals="deepsearch_match,tool_recall" ;;
-  tau-bench|tau2|tau3|tau3bench|tau3-bench|traject-bench) evals="tool_recall" ;;
-  mmlu|gpqa|mmlu-pro|arc-challenge|truthfulqa|agieval|commonsenseqa|hellaswag|openbookqa) evals="mc_letter" ;;
-  gsm8k|math) evals="numeric_match" ;;
-  humaneval) evals="humaneval_pass" ;;
-  persistbench) evals="substring" ;;
-  bbh) evals="exact_match" ;;
-  gdpval-aa) evals="llm_judge" ;;
   gdpval) echo "dataset gdpval was removed; use gdpval-aa (HF openai/gdpval)" >&2; exit 2 ;;
-  *) echo "unknown dataset: $dataset" >&2; exit 2 ;;
 esac
 
 extra=()
@@ -60,7 +51,6 @@ exec timeout "$wall" "$AEP_PY" examples/run_experiment.py \
   --agent "$agent" \
   --n 1 \
   --model kimi/kimi-k3 \
-  --evaluators "$evals" \
   --sample-seed 20260816 \
   "${extra[@]}" \
   "$@"

@@ -16,7 +16,10 @@ Public API:
 
 from ageneval.task.datasets.swe_bench_pro.binding import build_swe_bench_pro_binding
 from ageneval.task.datasets.swe_bench_pro.grader import (
+    GRADER,
+    grade_swe_bench_pro_output,
     grade_with_patch,
+    post_platform_grade,
     score_swe_bench_pro,
     setup_swe_bench_pro,
 )
@@ -26,10 +29,13 @@ from ageneval.task.datasets.swe_bench_pro.loader import (
 )
 
 __all__ = [
+    "GRADER",
     "SWEBenchProDataset",
     "build_swe_bench_pro_binding",
+    "grade_swe_bench_pro_output",
     "grade_with_patch",
     "load_swe_bench_pro_tasks",
+    "post_platform_grade",
     "score_swe_bench_pro",
     "setup_swe_bench_pro",
 ]

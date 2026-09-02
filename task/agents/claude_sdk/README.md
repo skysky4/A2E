@@ -10,6 +10,27 @@ headlessly anywhere. Point it at any Anthropic-compatible endpoint
 (including OpenAI-style gateways that also expose `/v1/messages`) via
 `ANTHROPIC_BASE_URL`.
 
+For models that expose only OpenAI Chat Completions, select a managed Model
+Gateway profile instead of starting an external compatibility service:
+
+```bash
+# GLM-5.3
+export GLM_API_BASE=https://your-glm-endpoint/v1
+export GLM_API_KEY=...
+uv run python examples/run_experiment.py \
+  --dataset mmlu --agent claude-sdk --model-profile glm-5.3
+
+# GPT-5.6-sol
+export GPT56_API_BASE=https://your-gpt56-endpoint/v1
+export OPENAI_API_KEY=...
+uv run python examples/run_experiment.py \
+  --dataset mmlu --agent claude-sdk --model-profile gpt-5.6-sol
+```
+
+Each model starts one loopback-only, multi-protocol Gateway for the process
+lifetime. OpenAI Harnesses and Claude SDK share that port; the latter uses the
+Gateway's translated Messages route.
+
 ## Usage
 
 ```python

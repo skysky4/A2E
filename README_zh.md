@@ -92,7 +92,6 @@ cd task
   --dataset <数据集> \
   --agent   <框架>           # 默认 agno
   --model   kimi/kimi-k3 \
-  --evaluators <a,b,...>     # 见下表；run_n1.sh 会自动填
   --n       1 \
   --sample-seed 20260816 \
   --domain  retail           # tau-bench / tau2 / tau3
@@ -100,11 +99,10 @@ cd task
 
 | 旗标 | 作用 |
 |------|------|
-| `--list` | 打印全部 dataset / agent harness / evaluator |
+| `--list` | 打印全部 dataset / agent harness / grader |
 | `--dataset` | 数据集名（必填） |
 | `--agent` | agent harness（默认 `agno`） |
 | `--model` | 覆盖本次的 `A2E_MODEL` |
-| `--evaluators` | 逗号分隔打分器 |
 | `--n` | 样本数（绝对数量，随机无放回） |
 | `--domain` | `retail` / `airline`（tau-bench / tau2） |
 
@@ -116,35 +114,35 @@ cd task
 
 ### Benchmarks
 
-每个 benchmark 都内置了一组默认评测指标，可用 `--evaluators` 覆盖。
-使用 `--list` 可查看全部 benchmark、agent harness 和 evaluator。
+每个 benchmark 都自带一个主 grader，运行时会自动选择并执行。
+使用 `--list` 可查看全部 benchmark、agent harness 和 grader。
 
-| Benchmark | 类型 | 内置默认评测指标 | 沙箱 |
-|-----------|------|----------------------|------|
-| `tau-bench` | Tool | `tool_recall`, `llm_judge` | / |
-| `tau2` | Tool | `tool_recall`, `llm_judge` | / |
-| `tau3` | Tool | `tool_recall`, `llm_judge` | / |
-| `traject-bench` | Tool | `tool_recall`, `llm_judge` | / |
-| `mmlu` | QA | `mc_letter`, `llm_judge` | / |
-| `gsm8k` | QA | `numeric_match`, `llm_judge` | / |
-| `humaneval` | QA | `substring`, `llm_judge` | / |
-| `persistbench` | QA | `substring`, `llm_judge` | / |
-| `gdpval-aa` | QA | `llm_judge` | HF [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) |
-| `gpqa` | QA | `mc_letter`, `llm_judge` | / |
-| `mmlu-pro` | QA | `mc_letter`, `llm_judge` | / |
-| `arc-challenge` | QA | `mc_letter`, `llm_judge` | / |
-| `truthfulqa` | QA | `mc_letter`, `llm_judge` | / |
-| `agieval` | QA | `mc_letter`, `llm_judge` | / |
-| `commonsenseqa` | QA | `mc_letter`, `llm_judge` | / |
-| `hellaswag` | QA | `mc_letter`, `llm_judge` | / |
-| `openbookqa` | QA | `mc_letter`, `llm_judge` | / |
-| `bbh` | QA | `exact_match`, `llm_judge` | / |
-| `math` | QA | `numeric_match`, `llm_judge` | / |
-| `swe-bench-lite` | Sandbox | `swe_resolved`, `swe_fail_to_pass`, `swe_pass_to_pass` | ✅ |
-| `swe-bench-verified` | Sandbox | `swe_resolved`, `swe_fail_to_pass`, `swe_pass_to_pass` | ✅ |
-| `swe-bench-pro` | Sandbox | `swe_resolved`, `swe_fail_to_pass`, `swe_pass_to_pass` | ✅ |
-| `terminal-bench-2` | Sandbox | `tb_resolved` | ✅ |
-| `terminal-bench-2.1` | Sandbox | `tb_resolved` | ✅ |
+| Benchmark | 类型 | 沙箱 |
+|-----------|------|------|
+| `tau-bench` | Tool | / |
+| `tau2` | Tool | / |
+| `tau3` | Tool | / |
+| `traject-bench` | Tool | / |
+| `mmlu` | QA | / |
+| `gsm8k` | QA | / |
+| `humaneval` | QA | / |
+| `persistbench` | QA | / |
+| `gdpval-aa` | QA | HF [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) |
+| `gpqa` | QA | / |
+| `mmlu-pro` | QA | / |
+| `arc-challenge` | QA | / |
+| `truthfulqa` | QA | / |
+| `agieval` | QA | / |
+| `commonsenseqa` | QA | / |
+| `hellaswag` | QA | / |
+| `openbookqa` | QA | / |
+| `bbh` | QA | / |
+| `math` | QA | / |
+| `swe-bench-lite` | Sandbox | ✅ |
+| `swe-bench-verified` | Sandbox | ✅ |
+| `swe-bench-pro` | Sandbox | ✅ |
+| `terminal-bench-2` | Sandbox | ✅ |
+| `terminal-bench-2.1` | Sandbox | ✅ |
 
 ### Agent Harnesses
 
@@ -201,9 +199,9 @@ Trace，即可看到 LLM / tool 调用的 span 树。
 
 ## 4. 评测打分
 
-轨迹入库后，用 `eval/` 中的统一评测流水线对过程与最终结果打分。构建实验时仍可用
-`--evaluators` 做轻量内联评分；更深的指标分组（规划、工具、记忆、正确性、效率、安全）
-走 `eval/`。
+轨迹入库后，用 `eval/` 中的统一评测流水线对过程与最终结果打分。实验本身已记录
+自动选择的 benchmark 主 grader 分数；更深的指标分组（规划、工具、记忆、正确性、
+效率、安全）仍走独立的 `eval/` 流水线。
 
 完整说明见 [`eval/README.md`](eval/README.md)。
 

@@ -113,6 +113,7 @@ class LlamaIndexInstrumentor(BaseInstrumentor):  # type: ignore
                 lambda h: not isinstance(h, type(self._event_handler)),
                 dispatcher.event_handlers,
             )
+            self._span_handler.close()
             self._event_handler = None
 
 

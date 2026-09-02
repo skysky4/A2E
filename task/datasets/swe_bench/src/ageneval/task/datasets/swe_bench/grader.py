@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ageneval.task.core.dataset import TaskInput
+from ageneval.task.core.grading import GradeReport, GraderSpec
 
 logger = logging.getLogger(__name__)
 
@@ -138,3 +139,70 @@ def _jsonable(obj: Any) -> Any:
         if isinstance(obj, (list, tuple)):
             return [_jsonable(v) for v in obj]
         return str(obj)
+
+
+def _swe_metric(output: Mapping[str, Any], raw_key: str) -> Any:
+    """Read live-grader keys or their historical platform-prefixed form."""
+    return output.get(raw_key, output.get(f"swe_{raw_key}"))
+
+
+def _fraction(passed: Any, total: Any) -> float:
+    if not isinstance(passed, (int, float)) or not isinstance(total, (int, float)):
+        return 0.0
+    return float(passed) / float(total) if total else 0.0
+
+
+def grade_swe_bench_output(
+    output: Mapping[str, Any],
+    expected: Mapping[str, Any] | None = None,
+    input: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> GradeReport:
+    """Build platform metrics from an already-computed live-sandbox result."""
+    del expected, input, metadata
+    resolved = bool(output.get("resolved"))
+    score = float(resolved)
+    f2p_passed = _swe_metric(output, "f2p_passed")
+    f2p_total = _swe_metric(output, "f2p_total")
+    p2p_passed = _swe_metric(output, "p2p_passed")
+    p2p_total = _swe_metric(output, "p2p_total")
+    return GradeReport(
+        score=score,
+        passed=resolved,
+        metrics={
+            "swe_resolved": score,
+            "swe_fail_to_pass": _fraction(f2p_passed, f2p_total),
+            "swe_pass_to_pass": _fraction(p2p_passed, p2p_total),
+        },
+        metadata={
+            "status": output.get("status", output.get("swe_status")),
+            "f2p_passed": f2p_passed,
+            "f2p_total": f2p_total,
+            "p2p_passed": p2p_passed,
+            "p2p_total": p2p_total,
+        },
+        error=output.get("score_error") or output.get("error"),
+        explanation="Official SWE-bench resolved status from the live sandbox.",
+        official=True,
+        source="princeton-nlp/SWE-bench",
+        version="swebench-official",
+    )
+
+
+GRADER = GraderSpec(
+    id="swe_resolved",
+    grade=score_swe_bench,
+    summarize=grade_swe_bench_output,
+    mode="inline",
+    official=True,
+    source="princeton-nlp/SWE-bench",
+    version="swebench-official",
+)
+post_platform_grade = grade_swe_bench_output
+
+__all__ = [
+    "GRADER",
+    "grade_swe_bench_output",
+    "post_platform_grade",
+    "score_swe_bench",
+]

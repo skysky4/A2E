@@ -37,6 +37,7 @@ _SOURCE_COMMIT = "5c8eadf1f393183288fa08b8f73ca9a469cc5e00"
 _VERIFIER_CACHE_VOLUMES = (
     "aep-tb21-uv-cache-v1:/root/.cache/uv",
     "aep-tb21-uv-data-v1:/root/.local/share/uv",
+    "aep-tb21-pip-cache-v1:/root/.cache/pip",
 )
 
 
@@ -108,6 +109,8 @@ def _build_task(task_dir: Path) -> TaskInput | None:
     name = task_dir.name
     toml = _load_toml(task_dir / "task.toml")
     env = toml.get("environment", {}) or {}
+    agent = toml.get("agent", {}) or {}
+    verifier = toml.get("verifier", {}) or {}
     md = toml.get("metadata", {}) or {}
     image = env.get("docker_image")
     if not image:
@@ -115,7 +118,10 @@ def _build_task(task_dir: Path) -> TaskInput | None:
         return None
     instruction = (task_dir / "instruction.md").read_text(encoding="utf-8", errors="ignore").strip()
     workdir = _parse_workdir(task_dir)
-    verifier_timeout = float((toml.get("verifier", {}) or {}).get("timeout_sec", 900.0))
+    agent_timeout = float(agent.get("timeout_sec", 900.0))
+    verifier_timeout = float(verifier.get("timeout_sec", 900.0))
+    environment_env = {str(k): str(v) for k, v in (env.get("env", {}) or {}).items()}
+    verifier_env = {str(k): str(v) for k, v in (verifier.get("env", {}) or {}).items()}
     return TaskInput(
         task_id=name,
         instruction=instruction,
@@ -135,7 +141,9 @@ def _build_task(task_dir: Path) -> TaskInput | None:
             "environment_storage_mb": env.get("storage_mb"),
             "environment_gpus": env.get("gpus"),
             "environment_allow_internet": env.get("allow_internet"),
+            "agent_timeout_sec": agent_timeout,
             "verifier_timeout_sec": verifier_timeout,
+            "verifier_env": verifier_env,
         },
         sandbox={
             "type": "docker",
@@ -143,8 +151,13 @@ def _build_task(task_dir: Path) -> TaskInput | None:
                 "image": str(image),
                 "cwd": workdir,
                 "pull": True,
+                "cpus": env.get("cpus"),
+                "memory_mb": env.get("memory_mb"),
+                "gpus": env.get("gpus"),
+                "allow_internet": env.get("allow_internet", True),
+                "env": environment_env,
                 # Official verifiers run uvx with the same pinned dependencies.
-                # Named volumes cache only uv downloads across fresh task
+                # Named volumes cache uv and pip downloads across fresh task
                 # containers. Task files, held-out tests, and rewards stay
                 # isolated in each container.
                 "volumes": list(_VERIFIER_CACHE_VOLUMES),
@@ -164,6 +177,7 @@ def _safe_build(task_dir: Path) -> TaskInput | None:
 def load_terminal_bench_2_1_tasks(
     n: int | None = 1,
     task_ids: Sequence[str] | None = None,
+    exclude_categories: Sequence[str] | None = None,
 ) -> TerminalBench21Dataset:
     """Load vendored Terminal-Bench 2.1 tasks into ``TaskInput`` records.
 
@@ -173,6 +187,8 @@ def load_terminal_bench_2_1_tasks(
             locally are preferred (so a demo/test "just works" without a fresh
             multi-GB pull), falling back to alphabetical order.
         task_ids: If given, load exactly these task names (ignoring ``n``).
+        exclude_categories: Case-insensitive task categories to omit before
+            local-image preference and ``n`` truncation.
 
     Returns:
         A ``TerminalBench21Dataset`` ready to feed ``SandboxScoringRunner``.
@@ -185,6 +201,12 @@ def load_terminal_bench_2_1_tasks(
     if not available:
         raise FileNotFoundError(f"no vendored {_DATASET_NAME} tasks found under {base}")
 
+    excluded = {
+        str(category).strip().lower()
+        for category in (exclude_categories or ())
+        if str(category).strip()
+    }
+
     if task_ids:
         missing = sorted(set(task_ids) - set(available))
         if missing:
@@ -193,6 +215,13 @@ def load_terminal_bench_2_1_tasks(
     else:
         built = [(t, _safe_build(base / t)) for t in available]
         built = [(t, ti) for t, ti in built if ti is not None]
+        if excluded:
+            built = [
+                (t, ti)
+                for t, ti in built
+                if str(ti.metadata.get("category", "")).strip().lower() not in excluded
+            ]
+            logger.info("%s: excluded categories: %s", _DATASET_NAME, sorted(excluded))
         # Prefer locally-cached images so a no-pin run avoids a fresh multi-GB pull.
         if n is not None:
             local = _local_images()

@@ -9,6 +9,7 @@ Public API:
     LocalSandboxEnvironment, DockerSandboxEnvironment — built-in providers
 """
 
+from ageneval.task.sandbox.activity import set_activity_callback
 from ageneval.task.sandbox.cleanup import sweep_sandbox_containers
 from ageneval.task.sandbox.context import sandbox, sandbox_session
 from ageneval.task.sandbox.docker import DockerSandboxEnvironment
@@ -28,5 +29,6 @@ __all__ = [
     "sandbox",
     "sandbox_session",
     "sandboxenv",
+    "set_activity_callback",
     "sweep_sandbox_containers",
 ]

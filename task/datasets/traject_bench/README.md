@@ -4,8 +4,9 @@ traject-bench — a self-contained **tool-calling trajectory** benchmark for A2E
 
 Each task is a user request plus a small, self-consistent "assistant utilities"
 tool domain (weather, calculator, unit conversion, fact lookup, currency). The
-agent must invoke 1–2 tools to answer correctly; the `tool_recall` evaluator
-scores the trajectory against the expected tool sequence.
+agent must invoke 1–2 tools to answer correctly. Its benchmark-owned
+`traject_grader` combines available action and answer references and is marked
+unofficial because the upstream trajectory judge is not reproduced locally.
 
 No public PyPI/HF release exists for this id at the moment; the loader first
 tries an optional HuggingFace source and otherwise falls back to the vendored

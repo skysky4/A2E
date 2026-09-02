@@ -1,0 +1,21 @@
+schema_version: 1
+id: openai-compatible
+provider: openai-compatible
+model: gpt-4o-mini
+upstream_protocol: openai_chat_completions
+connection:
+  base_url_env: OPENAI_API_BASE
+  api_key_env: OPENAI_API_KEY
+capabilities:
+  tools: true
+  streaming: true
+  vision: false
+  structured_output: true
+concurrency:
+  group: openai-default
+  max_sessions: 16
+gateway:
+  interfaces:
+    - openai_chat_completions
+    - anthropic_messages
+middleware: []

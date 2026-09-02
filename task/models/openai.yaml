@@ -1,0 +1,16 @@
+schema_version: 1
+id: openai
+provider: openai
+model: gpt-4o-mini
+upstream_protocol: openai_chat_completions
+connection:
+  api_key_env: OPENAI_API_KEY
+capabilities:
+  tools: true
+  streaming: true
+  vision: false
+  structured_output: true
+concurrency:
+  group: openai-default
+  max_sessions: 16
+middleware: []

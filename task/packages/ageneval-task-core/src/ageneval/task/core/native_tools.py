@@ -14,6 +14,7 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import typing
 import urllib.parse
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
@@ -210,10 +211,16 @@ def invoke_binding_tool(
     )
 
 
-def _annotation_for(spec: Mapping[str, Any]) -> type:
+def _annotation_for(spec: Mapping[str, Any]) -> Any:
     raw = spec.get("type", "string") if isinstance(spec, Mapping) else "string"
     if isinstance(raw, list):
         raw = raw[0] if raw else "string"
+    if raw == "array":
+        items = spec.get("items") if isinstance(spec, Mapping) else None
+        item_spec = items if isinstance(items, Mapping) else {"type": "string"}
+        return list[_annotation_for(item_spec)]
+    if raw == "object":
+        return dict[str, Any]
     return _JSON_TO_PY.get(str(raw), str)
 
 
@@ -257,16 +264,20 @@ def attach_json_schema_signature(
                 continue
             spec_map = spec if isinstance(spec, Mapping) else {}
             anno = _annotation_for(spec_map)
-            default = inspect.Parameter.empty if pname in required else None
+            is_required = pname in required
+            # Google ADK 1.x only recognizes ``typing.Optional`` here; its
+            # function parser rejects the equivalent PEP 604 ``T | None``.
+            parameter_annotation = anno if is_required else typing.Optional[anno]
+            default = inspect.Parameter.empty if is_required else None
             params.append(
                 inspect.Parameter(
                     str(pname),
                     inspect.Parameter.KEYWORD_ONLY,
                     default=default,
-                    annotation=anno,
+                    annotation=parameter_annotation,
                 )
             )
-            annotations[str(pname)] = anno
+            annotations[str(pname)] = parameter_annotation
             desc = str(spec_map.get("description") or pname)
             doc_args.append(f"    {pname}: {desc}")
     fn.__name__ = name

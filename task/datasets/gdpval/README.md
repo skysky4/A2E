@@ -16,10 +16,11 @@ Tool-less **deliverable-generation** task (no sandbox, like `humaneval` / `qa_su
 - `rubric_pretty` → carried in `expected_outputs[0]` as the grading reference.
 - The agent's full reply is captured as the deliverable (`final_answer`).
 
-## Recommended evaluator
+## Grading
 
-`llm_judge` — an LLM-as-judge scores the produced deliverable against the rubric.
-There is no exact-match ground truth.
+The benchmark's `gdp_grader` is selected automatically. This dataset-owned
+LLM-as-judge scores the produced deliverable against the rubric; there is no
+exact-match ground truth.
 
 ## Run
 
@@ -27,7 +28,7 @@ There is no exact-match ground truth.
 cd task
 uv run python examples/run_experiment.py \
     --dataset gdpval-aa --agent agno --model qwen-max \
-    --evaluators llm_judge --n 3
+    --n 3
 ```
 
 Change the model via `--model` / `A2E_MODEL`; the API endpoint via
