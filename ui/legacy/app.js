@@ -95,7 +95,7 @@ const BENCHMARKS = [
   // Tool / interactive service workflow
   { name: "τ-bench", cat: 1, year: "2024", diff: "hard", dim: 2, key: "tau-bench" },
   { name: "τ²-bench", cat: 1, year: "2025", diff: "front", dim: 2, key: "tau2" },
-  { name: "τ³-bench", cat: 1, year: "2025", diff: "front", dim: 2, key: "tau3" },
+  { name: "τ³-bench", cat: 1, year: "2026", diff: "front", dim: 2, key: "tau3" },
 
   // Research
   { name: "GAIA", cat: 2, year: "2023", diff: "med" },
@@ -1004,34 +1004,17 @@ function fillEval(b, records, context) {
   body.innerHTML = "";
   body.append(el("p", "kicker", `Eval · ${b.name} all-sample average`));
 
-  // collect evaluator names
-  const names = [];
-  records.forEach((r) =>
-    (r.annotations || []).forEach((a) => {
-      if (!names.includes(a.name)) names.push(a.name);
-    }),
-  );
-  const avgOf = (name) => {
-    const xs = records
-      .map((r) => (r.annotations || []).find((a) => a.name === name)?.score)
-      .filter((x) => typeof x === "number");
-    return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null;
-  };
-
   // summary
-  const allAvgs = names.map(avgOf).filter((x) => x != null);
-  const overall = allAvgs.length
-    ? allAvgs.reduce((s, x) => s + x, 0) / allAvgs.length
-    : null;
+  const overall = annotationAverage(records, "correctness");
   const avgLatency = avgNumber(records.map((r) => r.latency_ms));
-  const summary = evalSummaryCard({ overall, records, avgLatency, evaluatorCount: names.length });
+  const summary = evalSummaryCard({ overall, records, avgLatency });
   summary.append(evalContextCard(b, records, context, true));
   body.append(summary);
   body.append(evalFishboneCard(records, overall));
   body.append(evalAssessmentCard(records));
 }
 
-function evalSummaryCard({ overall, records, avgLatency, evaluatorCount }) {
+function evalSummaryCard({ overall, records, avgLatency }) {
   const c = el("div", "card eval-summary-card");
   c.append(el("p", "card-label", "SUMMARY"));
   const hasScore = typeof overall === "number";
@@ -1050,7 +1033,7 @@ function evalSummaryCard({ overall, records, avgLatency, evaluatorCount }) {
     el(
       "div",
       "summary-sub",
-      `${records.length} samples · ${evaluatorCount || 0} evaluators`,
+      `${records.length} samples · average correctness`,
     ),
   );
   main.append(ring, copy);
@@ -1131,25 +1114,16 @@ function evalFishboneCard(records, overall) {
   const fish = el("div", "fishbone");
   fish.append(el("div", "fish-end fish-head", "HEAD"));
   fish.append(el("div", "fish-end fish-tail", "TAIL"));
-  const planSubMetrics = [
-    ["plan_grade", annotationAverage(records, "plan_grade")],
-    ["plan_goal_alignment", annotationAverage(records, "plan_goal_alignment")],
-    ["plan_completeness", annotationAverage(records, "plan_completeness")],
-    ["plan_constraint_adherence", annotationAverage(records, "plan_constraint_adherence")],
-    ["plan_hallucination", annotationAverage(records, "plan_hallucination")],
-  ];
-  const toolSubMetrics = [
-    ["tool_hallucination", annotationAverage(records, "tool_hallucination")],
-    ["tool_invocation", annotationAverage(records, "tool_invocation")],
-    ["self_correction_rate", annotationAverage(records, "self_correction_rate")],
-    ["tool_call_count", annotationAverage(records, "tool_call_count")],
-  ];
+  const groupMetrics = (group) => catalogGroupMetrics(group).map((name) => [name, annotationAverage(records, name)]);
+  const planSubMetrics = groupMetrics("plan");
+  const toolSubMetrics = groupMetrics("tool");
+  const finalSubMetrics = groupMetrics("correct");
   const svgNS = "http://www.w3.org/2000/svg";
   const expandables = [];
   [
     ["Plan", "plan_grade", annotationAverage(records, "plan_grade"), planSubMetrics],
     ["Tool", "tool_recall", annotationAverage(records, "tool_recall"), toolSubMetrics],
-    ["Final_Result", "overall_score", overall],
+    ["Final_Result", "correctness", overall, finalSubMetrics],
   ].forEach(([node, metricName, score, subMetrics], i) => {
     const item = el("div", `fish-item ${i % 2 ? "lower" : "upper"}`);
     item.append(
@@ -1278,13 +1252,11 @@ function evalAssessmentCard(records) {
   c.append(el("p", "card-label", "EVALUATION"));
   const tree = el("div", "assessment-tree");
   tree.append(el("div", "assessment-root", "<span>Eval Tree</span><strong>Metrics</strong>"));
-  const metricValue = (name) => name === "total_token_usage"
-    ? totalTokenUsage(records)
-    : annotationAverage(records, name);
+  const metricValue = (name) => annotationAverage(records, name);
   [
-    ["Efficiency", catalogGroupMetrics("efficiency")],
+    ["Correctness", catalogGroupMetrics("correct")],
     ["Safety", catalogGroupMetrics("safety")],
-    ["Accuracy", catalogGroupMetrics("correct")],
+    ["Efficiency", catalogGroupMetrics("efficiency")],
   ].forEach(([label, names], i) => {
     const metrics = names.map((name) => [name, metricValue(name)]);
     const row = el("div", "assessment-row");
@@ -1307,9 +1279,22 @@ function evalAssessmentCard(records) {
 }
 
 function annotationAverage(records, name) {
-  const target = String(name).toLowerCase();
+  const aliases = {
+    correctness: ["correct", "accuracy", "resolved", "tb_resolved", "swe_resolved"],
+    task_completion: ["task_succeeded"],
+    wall_time: ["elapsed_time"],
+  };
+  const candidates = [name, ...(aliases[String(name).toLowerCase()] || [])].map((candidate) =>
+    String(candidate).toLowerCase(),
+  );
   const xs = records
-    .map((r) => (r.annotations || []).find((a) => String(a.name).toLowerCase() === target)?.score)
+    .map((r) => {
+      for (const candidate of candidates) {
+        const score = (r.annotations || []).find((a) => String(a.name).toLowerCase() === candidate)?.score;
+        if (typeof score === "number" && Number.isFinite(score)) return score;
+      }
+      return null;
+    })
     .filter((x) => typeof x === "number");
   return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null;
 }
@@ -1318,12 +1303,18 @@ function totalTokenUsage(records) {
   let total = 0;
   let seen = false;
   records.forEach((r) => {
+    const evaluated = annotationAverage([r], "total_token_usage");
+    if (evaluated != null) {
+      seen = true;
+      total += evaluated;
+      return;
+    }
     const prompt = typeof r.prompt_token_count === "number" ? r.prompt_token_count : 0;
     const completion = typeof r.completion_token_count === "number" ? r.completion_token_count : 0;
     if (prompt || completion) seen = true;
     total += prompt + completion;
   });
-  return seen ? total : annotationAverage(records, "total_token_usage");
+  return seen ? total : null;
 }
 
 function formatScore(value) {
@@ -1332,8 +1323,11 @@ function formatScore(value) {
 
 function formatMetricValue(name, value) {
   if (typeof value !== "number") return "—";
-  if (name === "total_token_usage") return Math.round(value).toLocaleString("en-US");
-  if (name === "tool_call_count") return (Math.round(value * 10) / 10).toLocaleString("en-US");
+  if (name === "total_token_usage") return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  if (name === "wall_time") return `${value.toFixed(2)}s`;
+  if (["tool_call_count", "idle_turn_count", "tool_execution_error_rate", "repeated_tool_call_rate", "redcode_risky_operation_count"].includes(name)) {
+    return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  }
   return value.toFixed(2);
 }
 

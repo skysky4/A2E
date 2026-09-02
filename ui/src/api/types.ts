@@ -24,7 +24,7 @@ export interface ExperimentSummary {
 export interface Annotation {
   name: string;
   label?: string;
-  score?: number;
+  score?: number | null;
   explanation?: string;
 }
 
@@ -67,10 +67,17 @@ export interface AgentInfo {
 export interface MetricCatalogEntry {
   name: string;
   kind?: "LLM" | "CODE";
-  score_type?: "binary" | "graded" | "magnitude";
+  score_type?: "binary" | "graded" | "magnitude" | "ratio";
   positive_label?: string | null;
   labels?: string[];
   desc?: string;
+  plain_language?: string;
+  implementation?: {
+    module?: string;
+    logic?: string;
+  };
+  diagnostic_use?: string;
+  higher_is_better?: boolean | null;
   output_contract?: {
     required_fields?: string[];
     score?: {
@@ -94,7 +101,7 @@ export interface MetricCatalogEntry {
         pattern?: string;
       };
     };
-    positive_labels?: string[];
+    positive_labels?: Array<string | null>;
     label_score_map?: Record<string, number>;
     label_bands?: Array<Record<string, string | number | boolean>>;
     notes?: string[];
@@ -110,6 +117,7 @@ export interface MetricsCatalog {
       groups?: Record<
         string,
         {
+          label?: string;
           label_zh?: string;
           source?: string;
           note?: string;
