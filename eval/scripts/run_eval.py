@@ -40,7 +40,7 @@ def parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         default=[],
         help=(
             "Metric category to run. Use comma-separated values or repeat the flag. "
-            "Supported: all, plan, skill, memory, tool, correct, efficiency, safety."
+            "Supported: all, plan, memory, tool, correct, efficiency, safety."
         ),
     )
     parser.add_argument("--print-only", action="store_true", help="Print selected metrics without evaluating.")
@@ -56,6 +56,14 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     selected_parts = _split_parts(args.part)
+    has_explicit_metrics = any(
+        arg == "--metrics" or arg.startswith("--metrics=") for arg in passthrough
+    )
+    if has_explicit_metrics:
+        sys.argv = ["core/deal_server.py", *passthrough]
+        deal_server.main()
+        return
+
     selected_metrics = metrics_for_parts(selected_parts)
     print(f"Selected parts: {','.join(selected_parts)}")
     print(f"Selected metrics ({len(selected_metrics)}): {','.join(selected_metrics)}")

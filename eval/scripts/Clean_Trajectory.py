@@ -32,6 +32,7 @@ from a2e.client.experiments import evaluate_experiment, get_experiment
 from a2e.client.resources.experiments.evaluators import create_evaluator
 from a2e.evals.llm import LLM
 
+from core.eval_common import _unscored
 from scripts import terminal_bench_eval_writeback as base
 
 LOGGER = logging.getLogger("Clean_Trajectory")
@@ -338,8 +339,8 @@ def _clean_trajectory(llm: LLM, raw_view: Mapping[str, Any]) -> dict[str, Any]:
             "tool_use_summary": {
                 "necessary_steps_covered": "unknown",
                 "redundant_or_failed_steps": "unknown",
-                "tool_recall_label": "unknown",
-                "tool_recall_score": 0.0,
+                "tool_recall_label": "unscored",
+                "tool_recall_score": None,
             },
             "plan_summary": {
                 "parsimony_label": "over_planned",
@@ -395,10 +396,16 @@ def make_trajectory_evidence(
 ) -> Callable[..., dict[str, Any]]:
     def trajectory_evidence(example: Any = None, **_: Any) -> dict[str, Any]:
         evidence = _evidence_for(example, evidence_by_example_id)
-        has_error = bool(evidence.get("cleaning_error"))
+        if not evidence:
+            return _unscored("no cleaned trajectory evidence")
+        if evidence.get("cleaning_error"):
+            return _unscored(
+                f"trajectory cleaning failed: {evidence.get('cleaning_error')}",
+                metadata={"trajectory_evidence": evidence},
+            )
         return {
-            "score": 0.0 if has_error else 1.0,
-            "label": "cleaning_error" if has_error else "cleaned",
+            "score": 1.0,
+            "label": "cleaned",
             "explanation": base._json_dumps(
                 {
                     "task_goal": evidence.get("task_goal"),
@@ -429,6 +436,13 @@ def _judge_from_evidence(
 ) -> Callable[..., dict[str, Any]]:
     def evaluator(output: dict[str, Any], input: dict[str, Any], example: Any = None, **_: Any) -> dict[str, Any]:
         evidence = _evidence_for(example, evidence_by_example_id)
+        if not evidence:
+            return _unscored("no cleaned trajectory evidence")
+        if evidence.get("cleaning_error"):
+            return _unscored(
+                f"trajectory cleaning failed: {evidence.get('cleaning_error')}",
+                metadata={"trajectory_evidence": evidence},
+            )
         prompt = base._build_text_prompt(
             metric_name=metric_name,
             definition=definition,
@@ -457,13 +471,28 @@ def make_tool_recall_from_evidence(
 ) -> Callable[..., dict[str, Any]]:
     def tool_recall(example: Any = None, **_: Any) -> dict[str, Any]:
         evidence = _evidence_for(example, evidence_by_example_id)
+        if not evidence:
+            return _unscored("no cleaned trajectory evidence")
+        if evidence.get("cleaning_error"):
+            return _unscored(
+                f"trajectory cleaning failed: {evidence.get('cleaning_error')}",
+                metadata={"trajectory_evidence": evidence},
+            )
         summary = base._as_dict(evidence.get("tool_use_summary"))
         raw_score = summary.get("tool_recall_score")
+        label = str(summary.get("tool_recall_label") or "")
+        if raw_score is None or label in {"", "unknown"}:
+            return _unscored(
+                "cleaned evidence does not contain a usable tool_recall score",
+                metadata={"trajectory_evidence": evidence},
+            )
         try:
             score = float(raw_score)
         except (TypeError, ValueError):
-            score = 0.0
-        label = str(summary.get("tool_recall_label") or "unknown")
+            return _unscored(
+                f"tool_recall_score is not numeric: {raw_score!r}",
+                metadata={"trajectory_evidence": evidence},
+            )
         return {
             "score": max(0.0, min(1.0, score)),
             "label": label,
