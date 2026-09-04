@@ -20,7 +20,7 @@ from core.eval_common import (  # noqa: E402
 )
 
 METRIC_SPECS: dict[str, tuple[tuple[str, ...], str]] = {
-    "hallucination": (("faithful", "unfaithful"), "faithful"),
+    "hallucination": (("faithful", "unfaithful"), "unfaithful"),
     "plan_goal_alignment": (("aligned", "misaligned"), "aligned"),
     "plan_completeness": (("complete", "incomplete"), "complete"),
     "plan_constraint_adherence": (("adhered", "violated"), "adhered"),
