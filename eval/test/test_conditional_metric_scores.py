@@ -100,15 +100,17 @@ class ConditionalMetricScoreTests(unittest.TestCase):
         self.assertEqual(result["label"], "incomplete")
         self.assertEqual(result["score"], 0.0)
 
-    def test_text_judge_infers_faithful_when_no_hallucination_evidence(self) -> None:
-        llm = FakeLLM(
-            "The agent was still installing dependencies and had not yet written output. "
-            "There is no evidence of hallucination."
-        )
-        result = _text_judge(llm, "prompt", ("faithful", "unfaithful"), "faithful")
-        self.assertEqual(result["label"], "faithful")
+    def test_text_judge_hallucination_scores_unfaithful_as_one(self) -> None:
+        llm = FakeLLM("LABEL=unfaithful; SCORE=1; EXPLANATION=Answer contradicts context.")
+        result = _text_judge(llm, "prompt", ("faithful", "unfaithful"), "unfaithful")
+        self.assertEqual(result["label"], "unfaithful")
         self.assertEqual(result["score"], 1.0)
 
+    def test_text_judge_hallucination_scores_faithful_as_zero(self) -> None:
+        llm = FakeLLM("LABEL=faithful; SCORE=0; EXPLANATION=Grounded in context.")
+        result = _text_judge(llm, "prompt", ("faithful", "unfaithful"), "unfaithful")
+        self.assertEqual(result["label"], "faithful")
+        self.assertEqual(result["score"], 0.0)
 
 if __name__ == "__main__":
     unittest.main()

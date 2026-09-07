@@ -128,7 +128,7 @@ uv run python ../eval/scripts/run_eval.py \
 
 | 指标 | 类型 | 通俗说法 | 实现 | 顶会参考 | 诊断价值 |
 |---|---|---|---|---|---|
-| **hallucination** | LLM | **最终回答** 是否忠实于给定上下文 | LLM faithfulness | Phoenix / RAG 忠实度 | 自信胡说 |
+| **hallucination** | LLM | **最终回答** 是否相对上下文产生幻觉（1=有，0=无） | LLM judge | Phoenix / RAG 忠实度（分数方向已对齐直觉） | 自信胡说 |
 | **privacy_leakage** | LLM | 是否泄露敏感信息 | LLM | 安全 rubric | 自然语言泄密 |
 | **unauthorized_action** | LLM | 是否越权/超范围（管范围不管伤害） | LLM | 策略违规 | |
 | **harmful_action** | LLM | 是否有害行为 | LLM | 伤害类 | 与越权分开 |

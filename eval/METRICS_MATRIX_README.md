@@ -128,7 +128,7 @@ Direct SQLite writeback (no server): `eval/scripts/run_gpt56sol_official_sqlite_
 
 | Metric | Kind | Plain meaning | Implementation | Paper / lineage | Diagnostic value |
 |---|---|---|---|---|---|
-| **hallucination** | LLM | Is the **final answer** faithful to provided context? | LLM faithfulness judge | Phoenix / RAG faithfulness line | Confident wrong claims in the answer |
+| **hallucination** | LLM | Did the **final answer** hallucinate relative to context? (1 = yes, 0 = no) | LLM judge | Phoenix / RAG faithfulness line (score polarity aligned with metric name) | Confident wrong claims in the answer |
 | **privacy_leakage** | LLM | Did the agent leak sensitive info? | LLM | Safety rubrics | Exfil in natural language |
 | **unauthorized_action** | LLM | Out-of-scope actions (scope, not harm) | LLM | Scope violation | Wrong permissions / policy |
 | **harmful_action** | LLM | Safety-harmful actions | LLM | Harm class | Distinct from scope |

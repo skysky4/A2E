@@ -123,19 +123,24 @@ def make_faithfulness(llm: LLM) -> Callable[..., dict[str, Any]]:
 
 
 def make_hallucination(llm: LLM) -> Callable[..., dict[str, Any]]:
-    from a2e.evals.metrics import FaithfulnessEvaluator
+    from a2e.evals.metrics.hallucination import HallucinationEvaluator
 
-    return _dual_mode(
+    _STRUCTURED_LABEL_MAP = {"factual": "faithful", "hallucinated": "unfaithful"}
+
+    base_runner = _dual_mode(
         metric_name="hallucination",
-        build_structured=lambda llm_: FaithfulnessEvaluator(llm=llm_),
+        build_structured=lambda llm_: HallucinationEvaluator(llm=llm_),
         structured_input=lambda output, expected, input_: {
             "input": _instruction(input_),
             "output": _final_answer(output),
             "context": _context_for(output, input_),
         },
-        text_definition="Did the agent hallucinate? Label 'faithful' means no hallucination.",
+        text_definition=(
+            "Did the agent hallucinate relative to the context? "
+            "Score 1 = unfaithful (hallucination); score 0 = faithful (no hallucination)."
+        ),
         choices=("faithful", "unfaithful"),
-        positive="faithful",
+        positive="unfaithful",
         text_context=lambda output, expected, input_: {
             "Question": _instruction(input_),
             "Agent answer": _final_answer(output),
@@ -143,6 +148,17 @@ def make_hallucination(llm: LLM) -> Callable[..., dict[str, Any]]:
         },
         llm=llm,
     )
+
+    def runner(output: dict[str, Any], expected: dict[str, Any], input: dict[str, Any]) -> dict[str, Any]:
+        result = base_runner(output, expected, input)
+        mapped = _STRUCTURED_LABEL_MAP.get(result.get("label", ""))
+        if mapped is not None:
+            return {**result, "label": mapped}
+        return result
+
+    runner.__name__ = "hallucination"
+    runner.__qualname__ = "hallucination"
+    return runner
 
 
 def make_refusal(llm: LLM) -> Callable[..., dict[str, Any]]:
