@@ -566,10 +566,10 @@ def _build_cleaned_evaluators(
                 metric_name="hallucination",
                 definition=(
                     "Judge whether the final answer or claimed actions are faithful to the cleaned "
-                    "trajectory evidence. Label faithful means no hallucination."
+                    "trajectory evidence. Score 1 = unfaithful (hallucination); score 0 = faithful."
                 ),
                 choices=("faithful", "unfaithful"),
-                positive="faithful",
+                positive="unfaithful",
                 llm=llm,
                 evidence_by_example_id=evidence_by_example_id,
             )
