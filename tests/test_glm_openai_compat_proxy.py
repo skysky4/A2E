@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from scripts.glm_openai_compat_proxy import (
+from ageneval.model.gateway.glm_compat import (
     ProxyConfig,
     ProxyMetrics,
     build_upstream_url,
