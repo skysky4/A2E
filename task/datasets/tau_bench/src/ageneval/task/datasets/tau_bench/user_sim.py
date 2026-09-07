@@ -1,17 +1,19 @@
-"""Official Sierra τ-bench user simulator (``tau_bench.envs.user``).
+"""Official Sierra τ-bench LLM user simulator (``tau_bench.envs.user``).
 
-``task.instruction`` is the *hidden customer script*, not the agent's first
+``task.instruction`` is the *hidden customer script*, never the agent's first
 user message. Official ``Env.reset`` asks this simulator for the opening
 utterance; agent text is a ``respond`` action and ``step()`` continues until
 ``###STOP###``.
 
-The LLM strategy copies Sierra's ``LLMUserSimulationEnv`` system prompt
-verbatim. ``naive`` is a deterministic stand-in for unit tests (no API).
+This module implements Sierra's ``LLMUserSimulationEnv`` only. There is no
+naive / script / deterministic fallback on the official path.
 """
 
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 STOP_TOKEN = "###STOP###"
@@ -26,6 +28,27 @@ Rules:
 - Do not repeat the exact instruction in the conversation. Instead, use your own words to convey the same information.
 - Try to make the conversation as natural as possible, and stick to the personalities in the instruction."""
 
+_NAME_RE = re.compile(
+    r"You are ([A-Z][A-Za-z]+(?: [A-Z][A-Za-z]+)+)",
+)
+_ZIP_RE = re.compile(r"\b(\d{5})\b")
+_ORDER_RE = re.compile(r"(#W\d+)")
+
+_REMIND_NO_LEAK = (
+    "That reply copied the hidden instruction. "
+    "Generate one natural customer line only. "
+    "Do not repeat the instruction, and do not volunteer zip codes or order "
+    "IDs unless the agent just asked for them."
+)
+
+# Official Sierra only ends on an explicit ``###STOP###``. An empty model
+# reply is not a stop. Retry once, then return empty so the session can
+# continue; never map empty → STOP.
+_REMIND_NONEMPTY = (
+    "Reply with one natural customer line only, or "
+    f"{STOP_TOKEN} if the instruction goal is already satisfied."
+)
+
 
 class UserSimulationEnv(Protocol):
     def reset(self, instruction: str | None = None) -> str: ...
@@ -33,28 +56,51 @@ class UserSimulationEnv(Protocol):
     def step(self, content: str) -> str: ...
 
 
-class NaiveUserSimulationEnv:
-    """Deterministic user: short open, then the script, then confirmations."""
+def looks_like_hidden_script(text: str) -> bool:
+    """True if a customer utterance dumped the hidden Sierra script."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    head = t[:80]
+    has_you_are = (
+        t.startswith("You are ")
+        or "You are " in head
+        or t.lower().startswith("you name is ")
+        or "you name is " in head.lower()
+    )
+    has_zip = bool(_ZIP_RE.search(t))
+    has_order = bool(_ORDER_RE.search(t))
+    return has_you_are and (has_zip or has_order)
 
-    def __init__(self) -> None:
-        self.instruction = ""
-        self._turns = 0
 
-    def reset(self, instruction: str | None = None) -> str:
-        self.instruction = (instruction or "").strip()
-        self._turns = 0
-        return "Hi, I need help with an order I received."
+def official_tau_example_input(
+    hidden_script: str, initial_state: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """A2E example fields. Hidden Sierra script is not the agent opening."""
+    return {
+        "instruction": (
+            "Official Sierra τ conversation. "
+            "The agent sees only LLM user-simulator utterances, "
+            "never the hidden customer script."
+        ),
+        "hidden_instruction": hidden_script,
+        "initial_state": dict(initial_state or {}),
+    }
 
-    def step(self, content: str) -> str:
-        self._turns += 1
-        spoken = (content or "").strip()
-        if STOP_TOKEN in spoken:
-            return STOP_TOKEN
-        if self._turns == 1 and self.instruction:
-            return self.instruction
-        if self._turns >= 6:
-            return STOP_TOKEN
-        return "Yes, please go ahead."
+
+def hidden_script_from_example(
+    payload: Mapping[str, Any] | None,
+    metadata: Mapping[str, Any] | None = None,
+) -> str:
+    """Recover the hidden Sierra script from an uploaded example."""
+    data = dict(payload or {})
+    meta = dict(metadata or {})
+    return str(
+        data.get("hidden_instruction")
+        or meta.get("hidden_instruction")
+        or data.get("instruction")
+        or ""
+    )
 
 
 class LLMUserSimulationEnv:
@@ -83,11 +129,27 @@ class LLMUserSimulationEnv:
             {"role": "system", "content": self.build_system_prompt(instruction)},
             {"role": "user", "content": "Hi! How can I help you today?"},
         ]
-        return self._generate()
+        return self._official_utterance(self._generate())
 
     def step(self, content: str) -> str:
         self.messages.append({"role": "user", "content": content})
-        return self._generate()
+        return self._official_utterance(self._generate())
+
+    def _official_utterance(self, text: str) -> str:
+        """Official policy: one customer line, never the hidden script."""
+        text = (text or "").strip()
+        if not text:
+            self.messages.append({"role": "user", "content": _REMIND_NONEMPTY})
+            text = (self._generate() or "").strip()
+        if not looks_like_hidden_script(text):
+            return text
+        self.messages.append({"role": "user", "content": _REMIND_NO_LEAK})
+        retry = self._generate()
+        if looks_like_hidden_script(retry):
+            raise RuntimeError(
+                "official LLM user simulator leaked the hidden Sierra script"
+            )
+        return retry
 
     def _generate(self) -> str:
         from openai import OpenAI
@@ -107,12 +169,10 @@ class LLMUserSimulationEnv:
         if res.choices:
             text = str(getattr(res.choices[0].message, "content", None) or "")
         self.messages.append({"role": "assistant", "content": text})
-        return text.strip() or STOP_TOKEN
+        return text.strip()
 
 
 def load_user(strategy: str | None = None, model: str | None = None) -> UserSimulationEnv:
-    """``llm`` is official; ``naive`` is tests / offline."""
-    resolved = (strategy or os.environ.get("A2E_TAU_USER_STRATEGY") or "llm").strip().lower()
-    if resolved in {"naive", "script", "deterministic"}:
-        return NaiveUserSimulationEnv()
+    """Official Sierra path is the LLM user only. ``strategy`` is ignored."""
+    _ = strategy
     return LLMUserSimulationEnv(model=model)

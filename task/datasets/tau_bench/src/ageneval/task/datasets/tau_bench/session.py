@@ -2,37 +2,28 @@
 
 Harnesses such as Google ADK treat the first customer-facing text as the
 final answer. Official τ-bench does not: that text is ``respond``, and the
-user simulator replies. This wrapper re-invokes the *same* ``AgentRunner``
-with the next user utterance and a shared ``initial_state`` (the live DB).
-No harness ``run()`` loop is modified.
+LLM user simulator replies until ``###STOP###``. This wrapper re-invokes the
+same ``AgentRunner`` with the next user utterance and a shared live DB.
+No harness ``run()`` loop is modified. There is no naive user fallback.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
-from typing import Any
 
 from ageneval.task.core.agent import AgentRunner
+from ageneval.task.core.budget import remaining_deadline, run_deadline
 from ageneval.task.core.dataset import TaskInput
 from ageneval.task.core.result import TaskTrace, ToolCall
 
 from ageneval.task.datasets.tau_bench.runtime import WRITE_TOOLS, _is_tool_error
-from ageneval.task.datasets.tau_bench.user_sim import STOP_TOKEN, load_user
-
-_CONFIRM_MARKERS = (
-    "yes",
-    "yeah",
-    "yep",
-    "sure",
-    "ok",
-    "okay",
-    "go ahead",
-    "please proceed",
-    "please do",
-    "confirm",
-    "approved",
+from ageneval.task.datasets.tau_bench.user_sim import (
+    STOP_TOKEN,
+    load_user,
+    looks_like_hidden_script,
 )
 
 
@@ -43,7 +34,7 @@ def wrap_tau_official_session(agent: AgentRunner) -> AgentRunner:
 
 
 class TauOfficialSession(AgentRunner):
-    """One official user-sim conversation; ``inner`` is the unchanged harness."""
+    """One official LLM user-sim conversation; ``inner`` is the unchanged harness."""
 
     def __init__(self, inner: AgentRunner, *, user_strategy: str | None = None) -> None:
         self.inner = inner
@@ -61,22 +52,47 @@ class TauOfficialSession(AgentRunner):
         try:
             opening = user.reset(hidden)
         except Exception as exc:  # noqa: BLE001
-            from ageneval.task.datasets.tau_bench.user_sim import NaiveUserSimulationEnv
-
-            if isinstance(user, NaiveUserSimulationEnv):
-                return TaskTrace(
-                    task_id=task.task_id,
-                    agent_name=self.name,
-                    status="error",
-                    turns=0,
-                    elapsed_seconds=time.perf_counter() - start,
-                    error=f"tau user simulator reset failed: {exc}"[:1000],
-                )
-            # Official LLM user is preferred; quota/gateway failures fall back
-            # so the harness can still produce a trajectory.
-            user = NaiveUserSimulationEnv()
-            opening = user.reset(hidden)
-
+            return TaskTrace(
+                task_id=task.task_id,
+                agent_name=self.name,
+                status="error",
+                turns=0,
+                elapsed_seconds=time.perf_counter() - start,
+                error=f"official tau user simulator reset failed: {exc}"[:1000],
+                raw={
+                    "tau_user_strategy": type(user).__name__,
+                    "tau_hidden_instruction": True,
+                    "tau_opening": None,
+                },
+            )
+        if looks_like_hidden_script(opening):
+            return TaskTrace(
+                task_id=task.task_id,
+                agent_name=self.name,
+                status="error",
+                turns=0,
+                elapsed_seconds=time.perf_counter() - start,
+                error="official user simulator leaked the hidden Sierra script",
+                raw={
+                    "tau_user_strategy": type(user).__name__,
+                    "tau_hidden_instruction": True,
+                    "tau_opening": opening,
+                },
+            )
+        if not opening.strip():
+            return TaskTrace(
+                task_id=task.task_id,
+                agent_name=self.name,
+                status="error",
+                turns=0,
+                elapsed_seconds=time.perf_counter() - start,
+                error="official user simulator returned an empty opening",
+                raw={
+                    "tau_user_strategy": type(user).__name__,
+                    "tau_hidden_instruction": True,
+                    "tau_opening": opening,
+                },
+            )
         if STOP_TOKEN in opening:
             return TaskTrace(
                 task_id=task.task_id,
@@ -85,7 +101,12 @@ class TauOfficialSession(AgentRunner):
                 turns=0,
                 final_answer=opening,
                 elapsed_seconds=time.perf_counter() - start,
-                raw={"tau_user_strategy": type(user).__name__, "tau_responds": 0},
+                raw={
+                    "tau_user_strategy": type(user).__name__,
+                    "tau_responds": 0,
+                    "tau_hidden_instruction": True,
+                    "tau_opening": opening,
+                },
             )
 
         transcript: list[tuple[str, str]] = [("customer", opening)]
@@ -95,12 +116,24 @@ class TauOfficialSession(AgentRunner):
         turns = 0
         last_text = ""
         idle = 0
-        recovered = 0
-        max_responds = _max_responds()
+        episode_budget = _episode_budget()
+        episode_used = 0
         error: str | None = None
         status = "ok"
 
-        for respond_i in range(max_responds):
+        for respond_i in range(episode_budget):
+            remaining = episode_budget - episode_used
+            if remaining <= 0:
+                status = "max_turns"
+                break
+            if time.perf_counter() - start >= run_deadline():
+                status = "error"
+                error = (
+                    f"official run_deadline {run_deadline():.0f}s exceeded "
+                    f"after {episode_used} episode actions"
+                )
+                break
+            _set_inner_budget(self.inner, remaining)
             visible = _agent_visible(transcript)
             inner_task = TaskInput(
                 task_id=task.task_id,
@@ -109,13 +142,23 @@ class TauOfficialSession(AgentRunner):
                 metadata=dict(task.metadata or {}),
             )
             try:
-                trace = await self.inner.run(inner_task)
+                trace = await asyncio.wait_for(
+                    self.inner.run(inner_task),
+                    timeout=remaining_deadline(start),
+                )
+            except asyncio.TimeoutError:
+                error = (
+                    f"official run_deadline {run_deadline():.0f}s exceeded "
+                    f"during inner harness run"
+                )
+                status = "error"
+                break
             except Exception as exc:  # noqa: BLE001
                 error = str(exc)[:1000]
                 status = "error"
                 break
 
-            turns += int(trace.turns or 0)
+            n_new = 0
             for tc in trace.tool_calls or ():
                 key = (tc.name, json.dumps(dict(tc.arguments or {}), sort_keys=True, default=str))
                 if key in seen_keys:
@@ -123,12 +166,20 @@ class TauOfficialSession(AgentRunner):
                 seen_keys.add(key)
                 tools.append(tc)
                 transcript.append(("tool", _tool_line(tc)))
+                n_new += 1
             text = (trace.final_answer or "").strip()
             if text:
                 final = text
                 transcript.append(("agent", text))
+            used = max(int(trace.turns or 0), n_new + (1 if text else 0), 1)
+            episode_used += used
+            turns = episode_used
 
-            if trace.status == "error" and not tools:
+            if trace.status == "error" and not tools and not text:
+                # Official τ ``respond`` is plain customer-facing text. Some
+                # harnesses mark that turn ``error`` because they cleaned the
+                # text as a QA final. Continue the user-sim whenever there is
+                # a reply; only abort a silent failure.
                 status = "error"
                 error = trace.error
                 break
@@ -149,60 +200,29 @@ class TauOfficialSession(AgentRunner):
                 idle = 0
             last_text = text
 
-            if _has_successful_write(tools):
-                try:
-                    nxt = user.step(text)
-                except Exception:  # noqa: BLE001
-                    nxt = STOP_TOKEN
-                if STOP_TOKEN in (nxt or "") or not (nxt or "").strip():
-                    status = "ok"
-                    break
-                transcript.append(("customer", (nxt or "").strip()))
-                continue
-
-            if _looks_like_false_complete(text) and recovered < 2:
-                recovered += 1
-                transcript.append(
-                    (
-                        "customer",
-                        "You described a write but did not call the write tool. "
-                        "Call exchange, return, modify, or cancel now.",
-                    )
-                )
-                continue
-            if (
-                any(tc.name == "transfer_to_human_agents" for tc in tools)
-                and recovered < 2
-            ):
-                recovered += 1
-                transcript.append(
-                    (
-                        "customer",
-                        "Do not transfer me to a human. Finish with your write "
-                        "tools (exchange/return/modify/cancel).",
-                    )
-                )
-                continue
-
             try:
                 nxt = user.step(text)
             except Exception as exc:  # noqa: BLE001
-                error = f"tau user simulator step failed: {exc}"[:1000]
+                error = f"official tau user simulator step failed: {exc}"[:1000]
                 status = "error"
                 break
             nxt = (nxt or "").strip()
-            if not nxt or STOP_TOKEN in nxt:
-                if recovered < 2 and not _has_successful_write(tools):
-                    recovered += 1
-                    nxt = (
-                        "That is not finished. Please complete my request with your "
-                        "tools. I do not want a human transfer."
-                    )
-                else:
+            if looks_like_hidden_script(nxt):
+                error = "official user simulator leaked the hidden Sierra script"
+                status = "error"
+                break
+            if STOP_TOKEN in nxt:
+                status = "ok"
+                break
+            if not nxt:
+                # Official Sierra only stops on ###STOP###, never on empty.
+                idle += 1
+                if idle >= 2:
                     status = "ok"
                     break
+                continue
             transcript.append(("customer", nxt))
-            if respond_i == max_responds - 1:
+            if episode_used >= episode_budget:
                 status = "max_turns"
 
         return TaskTrace(
@@ -218,13 +238,34 @@ class TauOfficialSession(AgentRunner):
                 "tau_user_strategy": type(user).__name__,
                 "tau_responds": sum(1 for role, _ in transcript if role == "customer"),
                 "tau_hidden_instruction": True,
+                "tau_opening": next(
+                    (text for role, text in transcript if role == "customer"), opening
+                ),
                 "tau_write": _has_successful_write(tools),
+                "tau_episode_actions": episode_used,
+                "tau_episode_budget": episode_budget,
             },
         )
 
 
-def _max_responds() -> int:
-    return max(1, int(os.environ.get("A2E_TAU_MAX_RESPONDS", "12")))
+def _episode_budget() -> int:
+    """Official τ ``max_num_steps`` is the episode action budget (default 30)."""
+    raw = os.environ.get("A2E_MAX_TURNS") or os.environ.get("A2E_TAU_MAX_RESPONDS") or "30"
+    return max(1, int(raw))
+
+
+def _set_inner_budget(inner: object, remaining: int) -> None:
+    """Give the unchanged harness only the leftover official episode steps."""
+    leftover = max(1, int(remaining))
+    for obj in (inner, getattr(inner, "inner", None)):
+        if obj is None:
+            continue
+        for attr in ("max_turns", "max_steps"):
+            if hasattr(obj, attr):
+                try:
+                    setattr(obj, attr, leftover)
+                except Exception:  # noqa: BLE001
+                    continue
 
 
 def _has_successful_write(tools: list[ToolCall]) -> bool:
@@ -235,32 +276,6 @@ def _has_successful_write(tools: list[ToolCall]) -> bool:
             continue
         return True
     return False
-
-
-_FALSE_COMPLETE = (
-    "has been submitted",
-    "exchange has been",
-    "successfully submitted",
-    "request has been submitted",
-    "completed the exchange",
-    "already submitted",
-    "i've submitted",
-    "i have submitted",
-)
-
-
-def _looks_like_false_complete(text: str) -> bool:
-    t = (text or "").lower()
-    return any(marker in t for marker in _FALSE_COMPLETE)
-
-
-def _looks_like_confirm(text: str) -> bool:
-    t = (text or "").strip().lower()
-    if not t:
-        return False
-    if t in {"yes", "y", "ok", "okay", "sure", "yeah", "yep"}:
-        return True
-    return any(marker in t for marker in _CONFIRM_MARKERS)
 
 
 _LOOKUP_TOOLS = {
@@ -301,15 +316,11 @@ def _agent_visible(transcript: list[tuple[str, str]]) -> str:
 
     Harnesses start a fresh session on every ``run()``. Official τ keeps one
     message list; this transcript is the binding-side substitute so the
-    model does not re-ask for facts it already used.
+    model does not re-ask for facts it already used. The hidden script is
+    never included.
     """
     if len(transcript) == 1 and transcript[0][0] == "customer":
         return transcript[0][1]
-    last_customer = ""
-    for role, text in reversed(transcript):
-        if role == "customer":
-            last_customer = text
-            break
     lines = [
         "Continue this customer-service conversation. "
         "The customer script is hidden; only the lines below are visible. "
@@ -325,24 +336,5 @@ def _agent_visible(transcript: list[tuple[str, str]]) -> str:
         else:
             lines.append(f"[Tool] {text}")
     lines.append("")
-    failed_write = False
-    for role, text in transcript:
-        if role == "tool" and any(w in text for w in WRITE_TOOLS) and "error" in text.lower():
-            failed_write = True
-    if failed_write:
-        lines.append(
-            "A write tool returned an error. Fix the arguments and call it again. "
-            "item_ids must be item_ids_on_order from get_order_details, not "
-            "other product variants. new_item_ids must be available:true "
-            "variants of the same product. payment_method_id is the id field "
-            "(credit_card_… / gift_card_…), not the card last-four."
-        )
-    elif _looks_like_confirm(last_customer):
-        lines.append(
-            "The customer has confirmed. Call the matching write tool now. "
-            "Do not transfer to a human when exchange, return, cancel, or "
-            "modify tools can fulfill the request."
-        )
-    else:
-        lines.append("Respond to the latest Customer line.")
+    lines.append("Respond to the latest Customer line.")
     return "\n".join(lines)

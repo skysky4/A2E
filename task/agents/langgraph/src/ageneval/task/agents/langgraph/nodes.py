@@ -20,6 +20,11 @@ from openinference.semconv.trace import OpenInferenceSpanKindValues, SpanAttribu
 from opentelemetry import trace as trace_api
 
 from ageneval.task.core import AgentBinding, TaskInput
+from ageneval.task.core.native_tools import (
+    canonicalize_tool_args,
+    parse_leaked_tool_calls,
+    unwrap_tool_kwargs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +58,16 @@ def router_node(*, state: dict[str, Any], llm: Any, binding: AgentBinding) -> di
         )
 
         reply_text = _invoke_llm(llm, system, user, span)
+        leaked = parse_leaked_tool_calls(reply_text, allowed_names=set(tool_names))
+        if leaked:
+            call = leaked[0]
+            return {
+                "next_action": {
+                    "name": str(call.get("name") or ""),
+                    "arguments": dict(call.get("arguments") or {}),
+                },
+            }
         parsed = _parse_json(reply_text)
-        if "final_answer" in parsed:
-            return {"final_answer": str(parsed["final_answer"]), "next_action": None}
         if "action" in parsed:
             return {
                 "next_action": {
@@ -63,6 +75,8 @@ def router_node(*, state: dict[str, Any], llm: Any, binding: AgentBinding) -> di
                     "arguments": parsed.get("arguments", {}) or {},
                 },
             }
+        if "final_answer" in parsed:
+            return {"final_answer": str(parsed["final_answer"]), "next_action": None}
         logger.warning("router got unstructured reply, terminating")
         return {"final_answer": reply_text.strip() or "(no answer)", "next_action": None}
 
@@ -76,7 +90,10 @@ def executor_run(*, state: dict[str, Any], binding: AgentBinding) -> dict[str, A
     """
     action = state.get("next_action") or {}
     name = str(action.get("name") or "noop")
-    args = action.get("arguments", {}) or {}
+    raw_args = action.get("arguments", {}) or {}
+    if not isinstance(raw_args, dict):
+        raw_args = {}
+    args = canonicalize_tool_args(name, unwrap_tool_kwargs(raw_args))
     task: TaskInput = state["task"]
 
     args_json = json.dumps(args, default=str)
@@ -164,7 +181,7 @@ def _router_user_prompt(
     )
     return (
         f"Customer instruction: {task.instruction}\n"
-        f"Initial state: {json.dumps(task.initial_state, default=str)}\n"
+        f"Initial state: {json.dumps(_public_state(task.initial_state), default=str)}\n"
         f"History so far: {json.dumps(history, default=str)}\n"
         f"Available action names: {available}\n"
         f"{tool_policy}"
@@ -176,11 +193,41 @@ def _router_user_prompt(
     )
 
 
+def _public_state(state: Any) -> Any:
+    """Drop live DB / sandbox objects so the router prompt stays official-small."""
+    if not isinstance(state, dict):
+        return state
+    skip = {"__tau_db__", "_gdp_sandbox"}
+    out: dict[str, Any] = {}
+    for key, val in state.items():
+        if key in skip or str(key).startswith("_"):
+            continue
+        if key == "reference_files" and isinstance(val, dict):
+            out[key] = sorted(str(name) for name in val)
+            continue
+        out[key] = val
+    return out
+
+
 def _parse_json(text: str) -> dict[str, Any]:
-    match = _JSON_RE.search(text or "")
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        if raw[:4].lower().startswith("json"):
+            raw = raw[4:].lstrip()
+    start = raw.find("{")
+    if start >= 0:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(raw[start:])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    match = _JSON_RE.search(raw)
     if not match:
         return {}
     try:
-        return json.loads(match.group(0))
+        parsed = json.loads(match.group(0))
     except json.JSONDecodeError:
         return {}
+    return parsed if isinstance(parsed, dict) else {}

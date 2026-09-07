@@ -25,7 +25,10 @@ from ageneval.task.core import (
     TaskInput,
     TaskTrace,
     ToolCall,
+    clean_final_answer,
+    followup_user_prompt,
     make_kwargs_tool,
+    needs_followup_final,
 )
 
 # Unified model: default to .env's A2E_MODEL (a non-reasoning instruct model);
@@ -95,24 +98,48 @@ class OpenAIAgentsAgent(AgentRunner):
                 tools=tools,
             )
             result = await Runner.run(agent, task.instruction, max_turns=self.max_turns)
-            final = str(getattr(result, "final_output", "") or "")
+            raw_final = str(getattr(result, "final_output", "") or "")
+            final = clean_final_answer(raw_final)
+            if needs_followup_final(final, recorder):
+                raw_final, final = await _followup_no_tools(
+                    Agent,
+                    Runner,
+                    OpenAIChatCompletionsModel,
+                    client,
+                    task,
+                    recorder,
+                )
             turns = len(getattr(result, "raw_responses", []) or []) or len(recorder)
             return TaskTrace(
                 task_id=task.task_id,
                 agent_name=self.name,
-                status="ok" if final else "error",
+                status="ok" if final or raw_final else "error",
                 turns=turns,
                 tool_calls=tuple(recorder),
-                final_answer=final or None,
+                final_answer=final or raw_final or None,
                 elapsed_seconds=time.perf_counter() - start,
             )
         except MaxTurnsExceeded:
+            raw_final, final = "", ""
+            if recorder:
+                try:
+                    raw_final, final = await _followup_no_tools(
+                        Agent,
+                        Runner,
+                        OpenAIChatCompletionsModel,
+                        client,
+                        task,
+                        recorder,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             return TaskTrace(
                 task_id=task.task_id,
                 agent_name=self.name,
-                status="max_turns",
+                status="ok" if final or raw_final else "max_turns",
                 turns=self.max_turns,
                 tool_calls=tuple(recorder),
+                final_answer=final or raw_final or None,
                 elapsed_seconds=time.perf_counter() - start,
             )
         except Exception as exc:
@@ -127,6 +154,33 @@ class OpenAIAgentsAgent(AgentRunner):
                 elapsed_seconds=time.perf_counter() - start,
                 error=(str(exc) or type(exc).__name__)[:1000],
             )
+
+
+async def _followup_no_tools(
+    agent_cls: Any,
+    runner_cls: Any,
+    model_cls: Any,
+    client: Any,
+    task: TaskInput,
+    recorder: list[ToolCall],
+) -> tuple[str, str]:
+    """One extra Runner.run without tools after the official loop ends."""
+    follow_agent = agent_cls(
+        name="a2e-followup",
+        instructions="Write the required final output from the tool results. Do not call tools.",
+        model=model_cls(
+            model=os.environ.get("A2E_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-4o-mini",
+            openai_client=client,
+        ),
+        tools=[],
+    )
+    follow = await runner_cls.run(
+        follow_agent,
+        followup_user_prompt(task.instruction, recorder),
+        max_turns=1,
+    )
+    raw = str(getattr(follow, "final_output", "") or "")
+    return raw, clean_final_answer(raw)
 
 
 def _build_function_tools(

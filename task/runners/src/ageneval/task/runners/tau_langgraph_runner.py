@@ -34,9 +34,13 @@ def run_tau_langgraph(
         endpoint=endpoint,
         framework="langchain",
     )
+    from ageneval.task.datasets.tau_bench.session import wrap_tau_official_session
+
     dataset = load_tau_bench_tasks(domain=domain, n=n)
-    agent = LangGraphTauAgent(
-        domain=domain, model=model, api_base=api_base, api_key=api_key
+    agent = wrap_tau_official_session(
+        LangGraphTauAgent(
+            domain=domain, model=model, api_base=api_base, api_key=api_key
+        )
     )
 
     with ExperimentRunner(

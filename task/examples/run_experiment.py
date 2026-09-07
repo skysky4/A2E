@@ -41,18 +41,31 @@ from ageneval.task.runners import (
 
 logger = logging.getLogger(__name__)
 
+_TAU_DATASETS = frozenset({"tau-bench", "tau2", "tau3", "tau3bench", "tau3-bench"})
 
-def _build_examples(tasks):
+
+def _build_examples(tasks, dataset_key: str = ""):
     rows = []
+    is_tau = dataset_key in _TAU_DATASETS
     for t in tasks:
         meta = {"task_id": t.task_id, **dict(t.metadata)}
         # Sandbox datasets carry their per-task sandbox spec on TaskInput.sandbox;
         # round-trip it through metadata so the sandbox task_fn can rebuild it.
         if t.sandbox is not None:
             meta["sandbox"] = dict(t.sandbox)
+        if is_tau:
+            from ageneval.task.datasets.tau_bench.user_sim import official_tau_example_input
+
+            payload = official_tau_example_input(t.instruction, t.initial_state)
+            meta["tau_hidden_instruction"] = True
+        else:
+            payload = {
+                "instruction": t.instruction,
+                "initial_state": dict(t.initial_state),
+            }
         rows.append(
             {
-                "input": {"instruction": t.instruction, "initial_state": dict(t.initial_state)},
+                "input": payload,
                 "output": {
                     "expected_outputs": list(t.expected_outputs),
                     "expected_actions": list(t.expected_actions),
@@ -61,9 +74,6 @@ def _build_examples(tasks):
             }
         )
     return rows
-
-
-_TAU_DATASETS = frozenset({"tau-bench", "tau2", "tau3", "tau3bench", "tau3-bench"})
 
 
 def _make_task_fn(agent, ds_entry: dict | None = None, dataset_key: str = ""):
@@ -96,9 +106,16 @@ def _make_task_fn(agent, ds_entry: dict | None = None, dataset_key: str = ""):
         runner = wrap_dsqa_official_session(agent)
 
     def task_fn(input: dict, metadata: dict) -> dict:
+        instruction = input.get("instruction", "")
+        if is_tau:
+            from ageneval.task.datasets.tau_bench.user_sim import (
+                hidden_script_from_example,
+            )
+
+            instruction = hidden_script_from_example(input, metadata)
         task_input = TaskInput(
             task_id=metadata.get("task_id", "?"),
-            instruction=input.get("instruction", ""),
+            instruction=instruction,
             initial_state=input.get("initial_state", {}),
             metadata=metadata if is_sandbox else {},
             sandbox=metadata.get("sandbox") if is_sandbox else None,
@@ -142,6 +159,10 @@ def _make_task_fn(agent, ds_entry: dict | None = None, dataset_key: str = ""):
             from ageneval.task.datasets.tau_bench.reward import data_hash
             from ageneval.task.datasets.tau_bench.runtime import load_domain_data
 
+            out["tau_user_strategy"] = raw.get("tau_user_strategy")
+            out["tau_hidden_instruction"] = bool(raw.get("tau_hidden_instruction"))
+            out["tau_opening"] = raw.get("tau_opening")
+
             domain = str(
                 (task_input.initial_state or {}).get("__tau_domain__")
                 or (metadata or {}).get("domain")
@@ -154,6 +175,17 @@ def _make_task_fn(agent, ds_entry: dict | None = None, dataset_key: str = ""):
             out["tau_data_hash"] = data_hash(
                 db if isinstance(db, dict) else load_domain_data(domain)
             )
+        if dataset_key == "gdpval-aa":
+            state = task_input.initial_state if isinstance(task_input.initial_state, dict) else {}
+            if not out["final_answer"] and state.get("finish_summary"):
+                out["final_answer"] = str(state.get("finish_summary") or "")
+            out["gdp_submitted"] = list(state.get("submitted_files") or [])
+            out["gdp_submitted_meta"] = list(state.get("submitted_file_meta") or [])
+            out["gdp_finish_summary"] = str(state.get("finish_summary") or "")
+            refs = state.get("reference_files") or {}
+            out["gdp_n_attachments"] = len(refs) if isinstance(refs, dict) else len(list(refs))
+            out["gdp_abandoned"] = bool(state.get("abandoned"))
+            out["gdp_sandbox"] = state.get("sandbox_backend")
         preview = raw.get("system_prompt_preview")
         if preview:
             out["system_prompt_preview"] = str(preview)[:500]
@@ -360,6 +392,8 @@ def main() -> int:
         agent_kwargs["api_key"] = args.api_key
     agent_kwargs["max_turns"] = int(settings["max_turns"])
     agent_kwargs["max_steps"] = int(settings["max_turns"])
+    agent_kwargs["run_deadline"] = float(settings["run_deadline"])
+    agent_kwargs["request_timeout"] = float(settings["llm_timeout"])
     # Sandbox datasets (SWE-bench) need many turns; apply remaining
     # dataset-recommended overrides (each builder ignores kwargs it doesn't accept).
     for _k, _v in (ds_entry.get("agent_overrides") or {}).items():
@@ -392,7 +426,7 @@ def main() -> int:
     from a2e.client import Client  # type: ignore
 
     client = Client()
-    examples = _build_examples(dataset.tasks)
+    examples = _build_examples(dataset.tasks, dataset_key=args.dataset)
     ds_name = identity.dataset_name
     a2e_dataset = client.datasets.create_dataset(
         name=ds_name,

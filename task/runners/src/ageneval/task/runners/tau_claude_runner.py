@@ -33,8 +33,10 @@ def run_tau_claude(
         endpoint=endpoint,
         framework="claude_agent_sdk",
     )
+    from ageneval.task.datasets.tau_bench.session import wrap_tau_official_session
+
     dataset = load_tau_bench_tasks(domain=domain, n=n)
-    agent = ClaudeSDKTauAgent(domain=domain, model=model)
+    agent = wrap_tau_official_session(ClaudeSDKTauAgent(domain=domain, model=model))
 
     with ExperimentRunner(
         dataset=dataset,

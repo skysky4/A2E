@@ -29,7 +29,10 @@ from ageneval.task.core import (
     TaskInput,
     TaskTrace,
     ToolCall,
+    clean_final_answer,
+    followup_user_prompt,
     make_kwargs_tool,
+    needs_followup_final,
 )
 
 # Unified model: default to .env's A2E_MODEL (a non-reasoning instruct model);
@@ -107,12 +110,18 @@ class AutogenAgentChatAgent(AgentRunner):
                 max_tool_iterations=self.max_turns,
             )
             result = await agent.run(task=task.instruction)
+            final = clean_final_answer(_extract_final(result))
+            if needs_followup_final(final, recorder):
+                # Must run before model_client.close(); a closed client
+                # surfaces as "Connection error." and wipes the final.
+                follow_result = await _run_followup(model_client, task, recorder)
+                final = clean_final_answer(_extract_final(follow_result)) or _extract_final(
+                    follow_result
+                )
             try:
                 await model_client.close()
             except Exception:  # noqa: BLE001 — best-effort cleanup
                 pass
-
-            final = _extract_final(result)
             turns = _count_turns(result) or len(recorder)
             return TaskTrace(
                 task_id=task.task_id,
@@ -126,15 +135,55 @@ class AutogenAgentChatAgent(AgentRunner):
         except Exception as exc:
             # Broad catch: surface any SDK / network / parsing failure as an
             # error TaskTrace rather than crashing the whole experiment run.
+            error = (str(exc) or type(exc).__name__)[:1000]
+            final = ""
+            if needs_followup_final("", recorder):
+                try:
+                    from autogen_ext.models.openai import OpenAIChatCompletionClient
+
+                    follow_client = OpenAIChatCompletionClient(
+                        model=self.model,
+                        base_url=self.api_base or os.environ.get("OPENAI_API_BASE"),
+                        api_key=self.api_key or os.environ.get("OPENAI_API_KEY"),
+                        model_info=_build_model_info(self.model),
+                    )
+                    follow_result = await _run_followup(follow_client, task, recorder)
+                    final = clean_final_answer(
+                        _extract_final(follow_result)
+                    ) or _extract_final(follow_result)
+                    try:
+                        await follow_client.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                except Exception:  # noqa: BLE001
+                    final = ""
             return TaskTrace(
                 task_id=task.task_id,
                 agent_name=self.name,
-                status="error",
-                turns=0,
+                status="ok" if final else "error",
+                turns=len(recorder),
                 tool_calls=tuple(recorder),
+                final_answer=final or None,
                 elapsed_seconds=time.perf_counter() - start,
-                error=(str(exc) or type(exc).__name__)[:1000],
+                error=None if final else error,
             )
+
+
+async def _run_followup(model_client: Any, task: TaskInput, recorder: list[ToolCall]) -> Any:
+    """One extra AssistantAgent.run without tools after the official loop."""
+    from autogen_agentchat.agents import AssistantAgent
+
+    follow = AssistantAgent(
+        name="a2e_followup",
+        model_client=model_client,
+        tools=[],
+        system_message=(
+            "Write the required final output from the tool results. "
+            "Do not call tools."
+        ),
+        max_tool_iterations=1,
+    )
+    return await follow.run(task=followup_user_prompt(task.instruction, recorder))
 
 
 def _build_model_info(model: str) -> dict[str, Any]:

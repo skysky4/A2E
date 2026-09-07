@@ -310,15 +310,15 @@ DATASETS: Dict[str, Dict[str, Any]] = {
     "traject-bench": {"load": _load_traject_bench, "bind": _bind_traject_bench, "kind": "tool",
                       "default_evaluators": ["tool_recall", "llm_judge"],
                       "agent_overrides": {"max_turns": 8, "max_steps": 8}},
-    "gdpval-aa": {"load": _load_gdpval, "bind": _bind_gdpval, "kind": "qa",
+    "gdpval-aa": {"load": _load_gdpval, "bind": _bind_gdpval, "kind": "tool",
                   "default_evaluators": ["gdp_grader"],
-                  "agent_overrides": {"max_turns": 8, "max_steps": 8},
+                  "agent_overrides": {"max_turns": 250, "max_steps": 250},
                   "official_settings": {
-                      "max_turns": 8,
+                      "max_turns": 250,
                       "max_tokens": 16384,
                       "llm_timeout": 600.0,
-                      "run_deadline": 1700.0,
-                      "wall": 1800,
+                      "run_deadline": 7000.0,
+                      "wall": 7200,
                       "grader": "gdp_grader",
                   }},
     "deepsearchqa": {"load": _load_deepsearchqa, "bind": _bind_deepsearchqa, "kind": "tool",
@@ -439,7 +439,14 @@ def _build_google_adk(*, binding: Any, **kw: Any):
 def _build_agno(*, binding: Any, **kw: Any):
     """Build the generic AgnoAgent for any binding."""
     from ageneval.task.agents.agno import AgnoAgent
-    accepted = {"model", "api_base", "api_key", "max_turns"}
+    accepted = {
+        "model",
+        "api_base",
+        "api_key",
+        "max_turns",
+        "run_deadline",
+        "request_timeout",
+    }
     return AgnoAgent(binding=binding, **{k: v for k, v in kw.items() if k in accepted})
 
 

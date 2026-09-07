@@ -2,43 +2,22 @@
 
 GDPval dataset adapter for A2E.
 
-**Source:** [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) (OpenAI) —
-1,320 real-world, economically valuable knowledge-work tasks across 44 occupations
-in 9 GDP sectors. The public HF split exposes the open *gold* subset.
+**Source:** [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) (OpenAI).
 
-## Shape
+Official GDPval agents use a computer-use sandbox (E2B / production Docker)
+with:
 
-Tool-less **deliverable-generation** task (no sandbox, like `humaneval` / `qa_suite`):
+* reference files on disk (never dumped into the prompt)
+* Web Search / Web Fetch
+* View Image
+* Code Exec
+* Finish / Abandon
+* up to 250 turns
+* submit one or more **real files**
 
-- `prompt` → agent instruction (attachment file names are surfaced as a note; the
-  binary reference files themselves are NOT downloaded — a text-only endpoint can't
-  ingest xlsx/pdf/pptx).
-- `rubric_pretty` → carried in `expected_outputs[0]` as the grading reference.
-- The agent's full reply is captured as the deliverable (`final_answer`).
+This adapter starts E2B when `E2B_API_KEY` is set; otherwise it uses an
+isolated per-task workspace and still copies every attachment onto disk.
+Pairwise Elo (human = 1000) remains off-run; the in-run grader is `gdp_grader`.
 
-## Recommended grader
-
-`gdp_grader` (alias `llm_judge`) — an LLM-as-judge scores the produced
-deliverable against the rubric. Implementation:
-`src/ageneval/task/datasets/gdpval/grader.py`.
-
-OpenAI's published leaderboard metric is file-aware pairwise Elo (human = 1000);
-that tournament is not executed inside an A2E cell. There is no exact-match
-ground truth.
-
-## Run
-
-```bash
-cd task
-uv run python examples/run_experiment.py \
-    --dataset gdpval-aa --agent agno --model qwen-max \
-    --evaluators gdp_grader --n 3
-```
-
-Change the model via `--model` / `A2E_MODEL`; the API endpoint via
-`OPENAI_API_BASE` + `OPENAI_API_KEY` (see repo `.env`).
-
-Optional locals (otherwise the loader uses the HuggingFace cache / Hub):
-
-- `A2E_GDPVAL_FILES_DIR` — extracted reference files (default `~/.cache/a2e/gdpval-files`)
-- `A2E_GDPVAL_PARQUET` — path to a local `openai/gdpval` parquet
+Resolve files from `A2E_GDPVAL_FILES_DIR` or
+`/data/agenteval/a2e-data-full-20260817/gdpval-files`.

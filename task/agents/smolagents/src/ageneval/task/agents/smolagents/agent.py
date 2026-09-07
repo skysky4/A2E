@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, ToolCall
+from ageneval.task.core.native_tools import clean_final_answer, needs_followup_final
 
 from ageneval.task.agents.smolagents.prompts import build_additional_instructions
 
@@ -218,13 +219,15 @@ class SmolAgentsAgent(AgentRunner):
                 api_base=api_base,
                 api_key=api_key,
             )
+            additional = build_additional_instructions(self.binding.render_system_prompt())
             agent = ToolCallingAgent(
                 tools=tools,
                 model=model,
                 max_steps=self.max_steps,
+                instructions=additional or None,
             )
-            additional = build_additional_instructions(self.binding.render_system_prompt())
-            result = agent.run(task.instruction, additional_args=None)
+            _cap_think_tool(agent)
+            result = agent.run(task.instruction)
         except Exception as exc:  # noqa: BLE001
             msg = str(exc) or type(exc).__name__
             lower = msg.lower()
@@ -245,6 +248,15 @@ class SmolAgentsAgent(AgentRunner):
             )
 
         final_answer = _stringify(result)
+        if needs_followup_final(final_answer or "", recorder):
+            try:
+                extra = agent.provide_final_answer(task.instruction)
+                extra_text = _stringify(getattr(extra, "content", extra))
+                cleaned = clean_final_answer(extra_text or "")
+                if cleaned:
+                    final_answer = cleaned
+            except Exception:  # noqa: BLE001
+                pass
         turns = _count_steps(agent)
         elapsed = time.perf_counter() - start
         status = "ok" if final_answer else ("max_turns" if turns >= self.max_steps else "error")
@@ -294,6 +306,26 @@ def _stringify(result: Any) -> str | None:
         return json.dumps(result, default=str)
     except Exception:  # noqa: BLE001
         return str(result)
+
+
+def _cap_think_tool(agent: Any, *, limit: int = 2) -> None:
+    """Keep smolagents' optional built-in ``think`` from burning the official budget."""
+    tools = getattr(agent, "tools", None)
+    if not isinstance(tools, dict):
+        return
+    think = tools.get("think")
+    if think is None or not hasattr(think, "forward"):
+        return
+    n = {"c": 0}
+    orig = think.forward
+
+    def forward(*args: Any, **kwargs: Any) -> Any:
+        n["c"] += 1
+        if n["c"] > limit:
+            return "Stop thinking. Call a task tool or final_answer now."
+        return orig(*args, **kwargs)
+
+    think.forward = forward  # type: ignore[method-assign]
 
 
 def _count_steps(agent: Any) -> int:

@@ -30,7 +30,7 @@ def run_deadline() -> float:
     """Whole-agent wall clock. Same value for every harness on a dataset.
 
     ``run_n1.sh`` / ``run_full.sh`` set ``A2E_RUN_DEADLINE``
-    (τ=1100, DeepSearchQA=620, GDPval=1700) so one harness cannot stop
+    (τ=1100, DeepSearchQA=620, GDPval=7000) so one harness cannot stop
     early while others keep going.
     """
     return float(

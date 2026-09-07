@@ -106,7 +106,11 @@ def _is_search_tool_dump(text: str) -> bool:
     ):
         return True
     # CrewAI / ReAct leaked the tool call as the "final".
-    if re.search(r"\bto=(web_search|open_url)\b", low):
+    if re.search(
+        r"\bto=(web_search|open_url|code_exec|list_reference_files|read_file|"
+        r"write_file|finish|find_user_id_by_name_zip|find_user_id_by_email)\b",
+        low,
+    ):
         return True
     if "code:" in low and '"query"' in t and "web_search" in low:
         return True
@@ -114,6 +118,14 @@ def _is_search_tool_dump(text: str) -> bool:
         name in low for name in ("web_search", "open_url")
     ):
         return True
+    # Leftover router JSON is a tool request, not a customer-facing answer.
+    if t.lstrip().startswith("{") and '"final_answer"' not in t:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(t[t.find("{") :])
+        except Exception:  # noqa: BLE001
+            obj = None
+        if isinstance(obj, dict) and obj.get("action") and "final_answer" not in obj:
+            return True
     return False
 
 
@@ -176,57 +188,133 @@ def _args_from_leaked_blob(raw_args: Any, name: str) -> dict[str, Any]:
     return {}
 
 
-def parse_leaked_tool_calls(text: str) -> list[dict[str, Any]]:
-    """Recover official DSQA tools written as ReAct / ``to=name code:`` text.
+def _allowed_tool_alt(allowed: set[str]) -> str:
+    names = sorted(
+        (
+            n
+            for n in allowed
+            if n and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", n)
+        ),
+        key=len,
+        reverse=True,
+    )
+    return "|".join(re.escape(n) for n in names) or "web_search|open_url"
 
-    CrewAI (and some ReAct prompts) emit the intended ``web_search`` /
-    ``open_url`` call as the 'final' instead of dispatching it. The harness
-    loop is unchanged; the DSQA session executes these recovered calls
-    through the binding so the recorded trajectory matches the model intent.
+
+def parse_leaked_tool_calls(
+    text: str,
+    allowed_names: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Recover official tools written as ReAct / ``to=name code:`` text.
+
+    CrewAI (and some ReAct prompts) emit the intended call as the 'final'
+    instead of dispatching it. The harness loop is unchanged; the adapter
+    executes recovered calls through the binding so the trajectory matches
+    the model intent. Defaults to DeepSearchQA names; pass the binding's
+    tool names for τ / GDPval.
     """
     t = text or ""
+    allowed = {str(n).strip() for n in (allowed_names or _LEAKED_TOOL_NAMES) if n}
+    allowed_l = {n.lower() for n in allowed}
+    alt = _allowed_tool_alt(allowed | {n.lower() for n in allowed})
     found: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
     def _add(name: str, raw_args: Any) -> None:
-        tool = str(name or "").strip().lower()
-        if tool not in _LEAKED_TOOL_NAMES:
+        tool = str(name or "").strip()
+        if tool.lower() not in allowed_l:
             return
-        args = _args_from_leaked_blob(raw_args, tool)
-        if tool == "web_search" and not str(args.get("query") or "").strip():
+        canon = next((n for n in allowed if n.lower() == tool.lower()), tool)
+        args = _args_from_leaked_blob(raw_args, canon.lower())
+        if canon.lower() == "web_search" and not str(args.get("query") or "").strip():
             return
-        if tool == "open_url" and not str(args.get("url") or "").strip():
+        if canon.lower() in {"open_url", "web_fetch"} and not str(
+            args.get("url") or ""
+        ).strip():
             return
-        key = (tool, json.dumps(args, sort_keys=True, default=str))
+        key = (canon, json.dumps(args, sort_keys=True, default=str))
         if key in seen:
             return
         seen.add(key)
-        found.append({"name": tool, "arguments": args})
+        found.append({"name": canon, "arguments": args})
 
-    for match in re.finditer(r"\bto=(web_search|open_url)\b", t, flags=re.I):
-        rest = t[match.end() : match.end() + 500]
+    for match in re.finditer(rf"\bto=({alt})\b", t, flags=re.I):
+        rest = t[match.end() : match.end() + 4000]
         code = re.search(r"code:\s*(\{[\s\S]+)", rest)
-        if not code:
+        blob = ""
+        if code:
+            blob = code.group(1)
+        else:
+            brace = rest.find("{")
+            if brace >= 0:
+                try:
+                    obj, _ = json.JSONDecoder().raw_decode(rest[brace:])
+                except json.JSONDecodeError:
+                    obj = None
+                if isinstance(obj, dict):
+                    _add(match.group(1), obj)
+                    continue
+        if not blob:
             continue
-        blob = code.group(1)
-        nxt = re.search(r"\n\s*to=(?:web_search|open_url)\b", blob, flags=re.I)
+        nxt = re.search(rf"\n\s*to=(?:{alt})\b", blob, flags=re.I)
         if nxt:
             blob = blob[: nxt.start()]
         _add(match.group(1), blob.strip())
     for match in re.finditer(
-        r"\bAction\s*:\s*(web_search|open_url)\s*"
+        rf"\bAction\s*:\s*({alt})\s*"
         r"(?:[\s\S]{0,80}?)\bAction\s*Input\s*:\s*(\{.*?\}|[^\n]+)",
         t,
         flags=re.I,
     ):
         _add(match.group(1), match.group(2).strip())
-    for match in re.finditer(
-        r"\b(web_search|open_url)\b[^\n]{0,48}(\{[^{}\n]*\})",
-        t,
-        flags=re.I,
-    ):
-        _add(match.group(1), match.group(2))
+    for match in re.finditer(rf"\bAction\s*:\s*({alt})\b", t, flags=re.I):
+        rest = t[match.end() : match.end() + 80]
+        if re.search(r"^\s*Action\s*Input\s*:", rest, flags=re.I):
+            continue
+        _add(match.group(1), "{}")
+    leftover_action = False
+    start = t.find("{")
+    if start >= 0:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(t[start:])
+        except json.JSONDecodeError:
+            obj = None
+        if (
+            isinstance(obj, dict)
+            and obj.get("action")
+            and "final_answer" not in obj
+        ):
+            leftover_action = True
+            _add(str(obj.get("action") or ""), obj.get("arguments") or {})
+    if not leftover_action:
+        for match in re.finditer(
+            rf"\b({alt})\b[^\n]{{0,48}}(\{{[^{{}}\n]*\}})",
+            t,
+            flags=re.I,
+        ):
+            _add(match.group(1), match.group(2))
     return found
+
+
+def followup_user_prompt(instruction: str, recorder: Sequence[ToolCall]) -> str:
+    """User message for one extra no-tool completion after the official loop."""
+    blocks: list[str] = []
+    for tc in recorder or ():
+        ev = evidence_from_tool_call(tc)
+        if ev:
+            blocks.append(f"{tc.name}: {ev[:2500]}")
+    evidence = "\n\n".join(blocks) or "(no tool text)"
+    return (
+        f"{instruction}\n\nTool results already collected:\n{evidence}\n\n"
+        "Write the required final output now from those results. "
+        "Do not call tools. "
+        'If the task asked for JSON, return only {"final_answer":"..."}.'
+    )
+
+
+def needs_followup_final(text: str, recorder: Sequence[ToolCall]) -> bool:
+    """True when the official loop gathered tools but wrote no usable final."""
+    return bool(recorder) and not clean_final_answer(text or "")
 
 
 def is_unusable_final(text: str) -> bool:
@@ -583,6 +671,11 @@ def unwrap_tool_kwargs(kwargs: Mapping[str, Any]) -> dict[str, Any]:
                 if isinstance(parsed, dict):
                     return parsed
                 args[key] = parsed
+    if (
+        set(args) >= {"action", "arguments"}
+        and isinstance(args.get("arguments"), dict)
+    ):
+        return unwrap_tool_kwargs(dict(args["arguments"]))
     if len(args) != 1:
         return args
     only_key, only_val = next(iter(args.items()))
@@ -626,6 +719,20 @@ def canonicalize_tool_args(name: str, args: Mapping[str, Any]) -> dict[str, Any]
         out["query"] = " ".join(out["query"].split()).strip()
     if isinstance(out.get("url"), str) and out["url"].startswith(("http://", "https://")):
         out["url"] = canonicalize_url(out["url"])
+    if name == "find_user_id_by_name_zip":
+        if not out.get("zip"):
+            for key in ("zip_code", "zipcode", "postal_code"):
+                if out.get(key):
+                    out["zip"] = str(out.pop(key)).strip()
+                    break
+        if not out.get("first_name"):
+            raw_name = out.pop("name", None) or out.pop("full_name", None)
+            if raw_name:
+                parts = str(raw_name).split()
+                if parts:
+                    out["first_name"] = parts[0]
+                if len(parts) > 1:
+                    out["last_name"] = " ".join(parts[1:])
     return out
 
 
@@ -1188,18 +1295,6 @@ def _execute_recorded_tool_locked(
         }
         return clip_for_model(payload) + _hint_after_repeat(available)
 
-    if tool_name in {"web_search", "open_url"}:
-        same = sum(1 for tc in recorder if tc.name == tool_name)
-        if same >= 2:
-            payload = {
-                "error": (
-                    "web tool budget exhausted; answer from results already collected"
-                ),
-                "tool": tool_name,
-            }
-            # Do not append: 4+ identical web tools is a TRAJ fail.
-            return clip_for_model(payload) + _STOP_HINT
-
     if (
         tool_name == "transfer_to_human_agents"
         and _tau_force_write_enabled()
@@ -1609,6 +1704,11 @@ def execute_unique_recorded(
         tau = isinstance(initial_state, dict) and (
             initial_state.get("__tau_db__") or initial_state.get("__tau_domain__")
         )
+        gdp = isinstance(initial_state, dict) and (
+            initial_state.get("reference_files") or initial_state.get("workspace")
+        )
+        if gdp:
+            return clip_for_model(value, max_chars=80000)
         return clip_for_model(value, max_chars=16000 if tau else None)
 
     if tool_name in {"find_user_id_by_name_zip", "find_user_id_by_email"}:
@@ -1782,7 +1882,7 @@ def make_kwargs_tool(
 
 def pydantic_args_model(name: str, parameters: Mapping[str, Any]) -> type:
     """Build a pydantic v2 model from a JSON-Schema parameters block (crewai)."""
-    from pydantic import BaseModel, Field, create_model
+    from pydantic import BaseModel, ConfigDict, Field, create_model
 
     props = parameters.get("properties") or {}
     required = set(parameters.get("required") or [])
@@ -1805,7 +1905,11 @@ def pydantic_args_model(name: str, parameters: Mapping[str, Any]) -> type:
                 fields[str(pname)] = (anno, Field(..., description=desc))
             else:
                 fields[str(pname)] = (anno | None, Field(default=None, description=desc))
-    return create_model(f"{name}Args", **fields, __base__=BaseModel)  # type: ignore[call-overload]
+
+    class _ArgsBase(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+
+    return create_model(f"{name}Args", **fields, __base__=_ArgsBase)  # type: ignore[call-overload]
 
 
 def openai_tool_dicts(schemas: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

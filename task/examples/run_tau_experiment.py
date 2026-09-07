@@ -51,32 +51,40 @@ logger = logging.getLogger(__name__)
 
 def _build_examples(tasks):
     """Convert TaskInput records into a2e-client dataset rows."""
+    from ageneval.task.datasets.tau_bench.user_sim import official_tau_example_input
+
     rows = []
     for t in tasks:
         rows.append(
             {
-                "input": {"instruction": t.instruction, "initial_state": dict(t.initial_state)},
+                "input": official_tau_example_input(t.instruction, t.initial_state),
                 "output": {
                     "expected_outputs": list(t.expected_outputs),
                     "expected_actions": list(t.expected_actions),
                 },
-                "metadata": {"task_id": t.task_id, **dict(t.metadata)},
+                "metadata": {
+                    "task_id": t.task_id,
+                    "tau_hidden_instruction": True,
+                    **dict(t.metadata),
+                },
             }
         )
     return rows
 
 
-def _make_task_fn(agent: LangGraphTauAgent):
+def _make_task_fn(agent):
     """Build a a2e-experiment-compatible task function backed by ``agent``."""
     from ageneval.task.core import TaskInput
+    from ageneval.task.datasets.tau_bench.user_sim import hidden_script_from_example
 
     def task_fn(input: dict, metadata: dict) -> dict:
         task_input = TaskInput(
             task_id=metadata.get("task_id", "?"),
-            instruction=input.get("instruction", ""),
+            instruction=hidden_script_from_example(input, metadata),
             initial_state=input.get("initial_state", {}),
         )
         trace = asyncio.run(agent.run(task_input))
+        raw = dict(trace.raw or {})
         return {
             "final_answer": trace.final_answer or "",
             "tool_calls": [tc.name for tc in trace.tool_calls],
@@ -84,6 +92,9 @@ def _make_task_fn(agent: LangGraphTauAgent):
             "turns": trace.turns,
             "trace_id": trace.trace_id,
             "error": trace.error,
+            "tau_user_strategy": raw.get("tau_user_strategy"),
+            "tau_hidden_instruction": bool(raw.get("tau_hidden_instruction")),
+            "tau_opening": raw.get("tau_opening"),
         }
 
     return task_fn
@@ -192,11 +203,15 @@ def main() -> int:
     examples = _build_examples(tasks.tasks)
 
     # 2. Build a unique identity before instrumentation or persistence.
-    agent = LangGraphTauAgent(
-        domain=args.domain,
-        model=args.model,
-        api_base=args.api_base,
-        api_key=args.api_key,
+    from ageneval.task.datasets.tau_bench.session import wrap_tau_official_session
+
+    agent = wrap_tau_official_session(
+        LangGraphTauAgent(
+            domain=args.domain,
+            model=args.model,
+            api_base=args.api_base,
+            api_key=args.api_key,
+        )
     )
     actual_model = str(getattr(agent, "_model_name", None) or args.model or "default-model")
     identity = build_run_identity(

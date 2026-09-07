@@ -113,12 +113,28 @@ class AgnoAgent(AgentRunner):
                 )
 
             assert self.binding is not None  # for type-checkers
+            from ageneval.task.core.budget import (
+                llm_timeout as shared_llm_timeout,
+                max_tokens as shared_max_tokens,
+                run_deadline as shared_deadline,
+            )
+
+            # Read budgets at run time so apply_run_settings / official_settings
+            # win over values captured when this module was imported.
+            request_timeout = float(os.environ.get("A2E_LLM_TIMEOUT") or self.request_timeout or shared_llm_timeout())
+            deadline = float(
+                os.environ.get("A2E_RUN_DEADLINE")
+                or os.environ.get("A2E_AGNO_DEADLINE")
+                or self.run_deadline
+                or shared_deadline()
+            )
             model = OpenAILike(
                 id=self.model,
                 api_key=api_key,
                 base_url=api_base,
-                timeout=self.request_timeout,
+                timeout=request_timeout,
                 max_retries=self.max_retries,
+                max_tokens=int(os.environ.get("A2E_MAX_TOKENS") or shared_max_tokens()),
             )
             tools = _build_function_tools(self.binding, task, recorder)
             agent = Agent(
@@ -126,6 +142,7 @@ class AgnoAgent(AgentRunner):
                 model=model,
                 tools=tools,
                 instructions=self.binding.render_system_prompt() + _NATIVE_TOOL_HINT,
+                tool_call_limit=max(1, int(self.max_turns)),
             )
 
             # agno's ``Agent.run`` is synchronous; run it off the event loop so
@@ -139,7 +156,7 @@ class AgnoAgent(AgentRunner):
             try:
                 result = await asyncio.wait_for(
                     asyncio.to_thread(agent.run, task.instruction),
-                    timeout=self.run_deadline,
+                    timeout=deadline,
                 )
             except asyncio.TimeoutError:
                 partial = tuple(recorder)
@@ -152,7 +169,7 @@ class AgnoAgent(AgentRunner):
                     final_answer=None,
                     elapsed_seconds=time.perf_counter() - start,
                     error=(
-                        f"agent exceeded {self.run_deadline:.0f}s deadline "
+                        f"agent exceeded {deadline:.0f}s deadline "
                         f"after {len(partial)} tool call(s)"
                     ),
                 )

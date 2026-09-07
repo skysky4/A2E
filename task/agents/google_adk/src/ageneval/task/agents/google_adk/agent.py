@@ -26,8 +26,11 @@ from ageneval.task.core import (
     TaskInput,
     TaskTrace,
     ToolCall,
+    clean_final_answer,
+    followup_user_prompt,
     llm_timeout,
     make_kwargs_tool,
+    needs_followup_final,
 )
 from ageneval.task.core.openai_compat import install_openai_compat
 
@@ -145,9 +148,43 @@ class GoogleADKAgent(AgentRunner):
                 if llm_turns >= self.max_turns + 1:
                     break
 
+            if needs_followup_final(final, recorder):
+                try:
+                    follow_agent = Agent(
+                        name="a2e_followup",
+                        model=llm,
+                        instruction="Write the required final output from the tool results. Do not call tools.",
+                        tools=[],
+                    )
+                    follow_runner = InMemoryRunner(agent=follow_agent, app_name=_APP_NAME)
+                    follow_sid = uuid.uuid4().hex
+                    await follow_runner.session_service.create_session(
+                        app_name=_APP_NAME,
+                        user_id=user_id,
+                        session_id=follow_sid,
+                    )
+                    follow_msg = genai_types.Content(
+                        role="user",
+                        parts=[
+                            genai_types.Part(
+                                text=followup_user_prompt(task.instruction, recorder)
+                            )
+                        ],
+                    )
+                    async for event in follow_runner.run_async(
+                        user_id=user_id,
+                        session_id=follow_sid,
+                        new_message=follow_msg,
+                    ):
+                        text = _extract_text(event)
+                        if text:
+                            final = clean_final_answer(text) or text
+                except Exception:  # noqa: BLE001
+                    pass
             turns = llm_turns or len(recorder)
-            status = "ok" if final else "error"
-            if not final and turns > self.max_turns:
+            cleaned = clean_final_answer(final)
+            status = "ok" if cleaned or final else "error"
+            if not cleaned and not final and turns > self.max_turns:
                 status = "max_turns"
             return TaskTrace(
                 task_id=task.task_id,
@@ -155,7 +192,7 @@ class GoogleADKAgent(AgentRunner):
                 status=status,
                 turns=turns,
                 tool_calls=tuple(recorder),
-                final_answer=final or None,
+                final_answer=cleaned or final or None,
                 elapsed_seconds=time.perf_counter() - start,
             )
         except Exception as exc:

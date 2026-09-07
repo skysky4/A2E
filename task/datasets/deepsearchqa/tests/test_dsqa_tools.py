@@ -54,6 +54,10 @@ def test_named_page_search_from_query_wording():
     )
     if scotus:
         assert any("121514" in h["url"] and "supremecourt.gov" in h["url"] for h in scotus)
+    fr = _named_page_search(
+        "site:federalreserve.gov/releases/h10 annual average exchange rates 2023 2020"
+    )
+    assert any("federalreserve.gov/releases/h10" in h["url"] for h in fr)
 
 
 def test_archive_id_url_wraps_blocked_official_pdf():

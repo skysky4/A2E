@@ -418,7 +418,9 @@ def _score_hit(hit: Mapping[str, str], query: str) -> int:
     slug = dated_mmddyy(query)
     if slug and slug in url:
         score += 30
-    if "federalreserve.gov" in host and "federal" in q:
+    if "federalreserve.gov" in host and (
+        "federal" in q or "h.10" in q or "h10" in q or "g5" in q or "exchange" in q
+    ):
         score += 40
     return score
 
@@ -457,6 +459,11 @@ def _expand_queries(query: str) -> list[str]:
             queries.append(f"site:scotusblog.com {q}")
     if "nhs" in low and "shoulder" in low and "site:nhs.uk" not in low:
         queries.append("site:nhs.uk/conditions/shoulder-pain")
+    if (
+        ("federalreserve" in low or "federal reserve" in low)
+        and "site:federalreserve.gov" not in low
+    ):
+        queries.append("site:federalreserve.gov/releases/h10")
     # unique, cap
     seen: set[str] = set()
     out: list[str] = []
@@ -648,6 +655,29 @@ def _named_page_search(query: str) -> list[dict[str, str]]:
     slug = order_list_slug(query)
     if slug and "supreme" in q:
         hits.extend(_archive_cdx_search(query))
+    fr = "federalreserve" in q or "federal reserve" in q
+    if fr and any(
+        key in q for key in ("h.10", "h10", "exchange", "g5", "g.5", "releases")
+    ):
+        hits.extend(
+            [
+                {
+                    "title": "Federal Reserve Board - Foreign Exchange Rates - H.10 Country Data",
+                    "snippet": "Official H.10 historical country tables named by the query.",
+                    "url": "https://www.federalreserve.gov/releases/h10/hist/",
+                },
+                {
+                    "title": "Federal Reserve Board - Foreign Exchange Rates - H.10 Current",
+                    "snippet": "Official H.10 current release.",
+                    "url": "https://www.federalreserve.gov/releases/h10/current/",
+                },
+                {
+                    "title": "Federal Reserve Board - Foreign Exchange Rates - G.5A Annual",
+                    "snippet": "Official G.5A annual averages named by the query.",
+                    "url": "https://www.federalreserve.gov/releases/g5a/current/",
+                },
+            ]
+        )
     return hits
 
 
@@ -666,18 +696,19 @@ def _web_search(query: str) -> dict[str, Any]:
         sources.append(source)
         return any(_score_hit(h, q) >= 40 for h in hits)
 
-    primary = (
-        ("named_page", _named_page_search),
-        ("bing", _bing_search),
-        ("brave", _brave_search),
-    )
+    # named_page only adds official URLs the query already names. It must not
+    # skip a live index — that was the DDG-only / no-search failure mode.
     for variant in _expand_queries(q):
-        official = False
-        for source, fn in primary:
+        _take(
+            "named_page",
+            _run_engine("named_page", _named_page_search, variant, errors),
+        )
+        live = False
+        for source, fn in (("bing", _bing_search), ("brave", _brave_search)):
             if _take(source, _run_engine(source, fn, variant, errors)):
-                official = True
+                live = True
                 break
-        if official:
+        if live:
             break
     if not any(_score_hit(h, q) >= 40 for h in pooled):
         _take("archive_cdx", _run_engine("archive_cdx", _archive_cdx_search, q, errors))
@@ -692,14 +723,22 @@ def _web_search(query: str) -> dict[str, Any]:
                 break
     merged = _rank_hits(pooled, q)
     official = [h for h in merged if _score_hit(h, q) >= 25]
-    chosen = official or ([] if _wants_official(q) else merged)
+    chosen = official or merged
+    if not chosen:
+        named = _named_page_search(q)
+        if named:
+            chosen = named
+            sources.append("named_page")
     if chosen:
-        return {
+        out: dict[str, Any] = {
             "query": q,
             "source": ",".join(dict.fromkeys(sources)),
             "results": chosen,
             "proxy": bool(_proxy_url()),
         }
+        if errors:
+            out["engine_errors"] = errors
+        return out
     raise RuntimeError("; ".join(errors) or "no official search results")
 
 

@@ -83,6 +83,96 @@ def rewrite_token_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _force_object_additional_properties_false(node: Any) -> Any:
+    """Copy a JSON schema and set ``additionalProperties: false`` on objects."""
+    if isinstance(node, dict):
+        out = {k: _force_object_additional_properties_false(v) for k, v in node.items()}
+        if out.get("type") == "object" or "properties" in out:
+            out["additionalProperties"] = False
+        return out
+    if isinstance(node, list):
+        return [_force_object_additional_properties_false(v) for v in node]
+    return node
+
+
+def _has_freeform_object(node: Any) -> bool:
+    if isinstance(node, dict):
+        if node.get("additionalProperties") is True:
+            return True
+        if node.get("type") == "object" and "properties" not in node:
+            return True
+        return any(_has_freeform_object(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_freeform_object(v) for v in node)
+    return False
+
+
+def rewrite_response_format(payload: dict[str, Any]) -> dict[str, Any]:
+    """Make CrewAI/instructor ``response_format`` acceptable to this gateway.
+
+    ``InstructorToolCalling.arguments`` is ``dict[str, Any] | None``, so the
+    schema has ``anyOf[0].additionalProperties: true``. The gateway 400s
+    unless every object sets ``additionalProperties: false``. Free-form
+    argument dicts cannot stay ``strict: true``, or tool args collapse to
+    ``{}``.
+    """
+    rf = payload.get("response_format")
+    if not isinstance(rf, dict):
+        return payload
+    js = rf.get("json_schema")
+    if not isinstance(js, dict):
+        return payload
+    schema = js.get("schema")
+    name = str(js.get("name") or "")
+    out = dict(payload)
+    rf2 = dict(rf)
+    js2 = dict(js)
+    freeform = _has_freeform_object(schema)
+    if isinstance(schema, dict):
+        js2["schema"] = _force_object_additional_properties_false(schema)
+    if name == "InstructorToolCalling" or freeform:
+        js2["strict"] = False
+    rf2["json_schema"] = js2
+    out["response_format"] = rf2
+    return out
+
+
+def rewrite_tools_json_schema(payload: dict[str, Any]) -> dict[str, Any]:
+    """Force ``additionalProperties: false`` on OpenAI tool parameter objects."""
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return payload
+    new_tools: list[Any] = []
+    changed = False
+    for tool in tools:
+        if not isinstance(tool, dict):
+            new_tools.append(tool)
+            continue
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            new_tools.append(tool)
+            continue
+        params = fn.get("parameters")
+        if not isinstance(params, dict):
+            new_tools.append(tool)
+            continue
+        fixed = _force_object_additional_properties_false(params)
+        if fixed == params:
+            new_tools.append(tool)
+            continue
+        changed = True
+        fn2 = dict(fn)
+        fn2["parameters"] = fixed
+        tool2 = dict(tool)
+        tool2["function"] = fn2
+        new_tools.append(tool2)
+    if not changed:
+        return payload
+    out = dict(payload)
+    out["tools"] = new_tools
+    return out
+
+
 def coerce_json_object(raw: Any) -> dict[str, Any]:
     """Accept the JSON shapes models emit; always return one object.
 
@@ -312,6 +402,8 @@ def _sanitize_payload(payload: Any) -> Any:
     if not isinstance(payload, dict):
         return payload
     payload = rewrite_token_kwargs(payload)
+    payload = rewrite_response_format(payload)
+    payload = rewrite_tools_json_schema(payload)
     msgs = payload.get("messages")
     if isinstance(msgs, list):
         payload = dict(payload)
@@ -499,6 +591,8 @@ def install_openai_compat() -> None:
                 import time
 
                 kwargs = rewrite_token_kwargs(kwargs)
+                kwargs = rewrite_response_format(kwargs)
+                kwargs = rewrite_tools_json_schema(kwargs)
                 if "messages" in kwargs:
                     kwargs["messages"] = sanitize_messages(kwargs["messages"])
                 last = None
@@ -519,6 +613,8 @@ def install_openai_compat() -> None:
                 import asyncio
 
                 kwargs = rewrite_token_kwargs(kwargs)
+                kwargs = rewrite_response_format(kwargs)
+                kwargs = rewrite_tools_json_schema(kwargs)
                 if "messages" in kwargs:
                     kwargs["messages"] = sanitize_messages(kwargs["messages"])
                 last = None

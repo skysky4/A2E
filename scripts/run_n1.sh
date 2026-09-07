@@ -36,15 +36,18 @@ case "$dataset" in
   tau-bench|tau2|tau3|tau3bench|tau3-bench) extra+=(--domain retail) ;;
 esac
 
+# Official cell budgets overwrite leaked .env values (CLI flags still win later).
 case "$dataset" in
-  tau-bench|tau2|tau3|tau3bench|tau3-bench) wall=1200; turns=30 ;;
-  gdpval-aa) wall=1800; turns=8; export A2E_MAX_TOKENS="${A2E_MAX_TOKENS:-16384}"; export A2E_LLM_TIMEOUT="${A2E_LLM_TIMEOUT:-600}" ;;
-  *) wall=720; turns=8 ;;
+  tau-bench|tau2|tau3|tau3bench|tau3-bench) wall=1200; turns=30; tokens=4096; llm_to=180 ;;
+  gdpval-aa) wall=7200; turns=250; tokens=16384; llm_to=600 ;;
+  *) wall=720; turns=8; tokens=4096; llm_to=180 ;;
 esac
-export A2E_MAX_TURNS="${A2E_MAX_TURNS:-$turns}"
-export A2E_MAX_STEPS="${A2E_MAX_STEPS:-$turns}"
-export A2E_RUN_DEADLINE="${A2E_RUN_DEADLINE:-$((wall - 100))}"
-export A2E_AGNO_DEADLINE="${A2E_AGNO_DEADLINE:-$A2E_RUN_DEADLINE}"
+export A2E_MAX_TOKENS="$tokens"
+export A2E_LLM_TIMEOUT="$llm_to"
+export A2E_MAX_TURNS="$turns"
+export A2E_MAX_STEPS="$turns"
+export A2E_RUN_DEADLINE="$((wall - 100))"
+export A2E_AGNO_DEADLINE="$A2E_RUN_DEADLINE"
 
 cd "$ROOT/task"
 cmd=(uv run --frozen python examples/run_experiment.py

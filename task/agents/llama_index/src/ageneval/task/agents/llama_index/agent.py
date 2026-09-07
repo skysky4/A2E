@@ -26,9 +26,13 @@ from ageneval.task.core import (
     TaskTrace,
     ToolCall,
     clean_final_answer,
+    followup_user_prompt,
     llm_timeout,
     make_kwargs_tool,
     max_tokens as _budget_tokens,
+    needs_followup_final,
+    parameters_block,
+    pydantic_args_model,
 )
 from ageneval.task.core.budget import max_retries
 from ageneval.task.core.openai_compat import install_openai_compat
@@ -72,6 +76,7 @@ class LlamaIndexAgent(AgentRunner):
     async def run(self, task: TaskInput) -> TaskTrace:
         start = time.perf_counter()
         recorder: list[ToolCall] = []
+        llm = None
         try:
             from llama_index.core.agent.workflow import FunctionAgent
             from llama_index.core.tools import FunctionTool
@@ -115,10 +120,9 @@ class LlamaIndexAgent(AgentRunner):
                 max_iterations=self.max_turns,
             )
             sdk_final, final = _extract_sdk_and_final(result)
-            if recorder and not final:
+            if needs_followup_final(final, recorder):
                 follow = await agent.run(
-                    'Write only {"final_answer":"..."} from the tool results. '
-                    "Do not call tools.",
+                    followup_user_prompt(task.instruction, recorder),
                     max_iterations=2,
                 )
                 sdk2, fin2 = _extract_sdk_and_final(follow)
@@ -128,7 +132,7 @@ class LlamaIndexAgent(AgentRunner):
             return TaskTrace(
                 task_id=task.task_id,
                 agent_name=self.name,
-                status="ok" if final or recorder else "error",
+                status="ok" if final or recorder or sdk_final else "error",
                 turns=turns,
                 tool_calls=tuple(recorder),
                 final_answer=final or sdk_final or None,
@@ -140,14 +144,31 @@ class LlamaIndexAgent(AgentRunner):
             # error TaskTrace rather than crashing the whole experiment run.
             error = (str(exc) or type(exc).__name__)[:1000]
             reached_limit = "Max iterations of" in error
+            sdk_final, final = "", ""
+            if needs_followup_final("", recorder) and llm is not None:
+                try:
+                    follow_agent = FunctionAgent(
+                        tools=[],
+                        llm=llm,
+                        system_prompt=self.binding.render_system_prompt(),
+                    )
+                    follow = await follow_agent.run(
+                        followup_user_prompt(task.instruction, recorder),
+                        max_iterations=2,
+                    )
+                    sdk_final, final = _extract_sdk_and_final(follow)
+                except Exception:  # noqa: BLE001
+                    pass
             return TaskTrace(
                 task_id=task.task_id,
                 agent_name=self.name,
-                status="max_turns" if reached_limit else "error",
+                status="ok" if final else ("max_turns" if reached_limit else "error"),
                 turns=self.max_turns if reached_limit else len(recorder),
                 tool_calls=tuple(recorder),
+                final_answer=final or sdk_final or None,
                 elapsed_seconds=time.perf_counter() - start,
-                error=error,
+                error=None if final else error,
+                raw={"inner_final": sdk_final},
             )
 
 
@@ -231,6 +252,7 @@ def _build_function_tools(
                 ),
                 name=name,
                 description=description,
+                fn_schema=pydantic_args_model(name, parameters_block(schema)),
             )
         )
     return tools

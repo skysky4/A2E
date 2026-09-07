@@ -139,7 +139,7 @@ uv run --frozen python examples/run_experiment.py --list
 |--------|-------------|--------------|----------|-----------------|
 | `tau-bench` / `tau2` / `tau3` | 30 | 4096 | 180s | 1200s / 1100s |
 | `deepsearchqa` | 8 | 4096 | 180s | 720s / 620s |
-| `gdpval-aa` | 8 | 16384 | 600s | 1800s / 1700s |
+| `gdpval-aa` | 250 | 16384 | 600s | 7200s / 7000s |
 
 在 `.env` 中设置 `A2E_MODEL`、`OPENAI_API_KEY`、`OPENAI_API_BASE`。可选的 GDPval 本地路径：`A2E_GDPVAL_FILES_DIR`、`A2E_GDPVAL_PARQUET`。
 
@@ -159,7 +159,7 @@ uv run --frozen python examples/run_experiment.py --list
 | `gsm8k` | QA | `numeric_match`, `llm_judge` | / |
 | `humaneval` | QA | `humaneval_pass` | / |
 | `persistbench` | QA | `substring`, `llm_judge` | / |
-| `gdpval-aa` | QA | `gdp_grader`（格子内 rubric judge；pairwise Elo 不在格子内跑） | HF [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) |
+| `gdpval-aa` | Tool | `gdp_grader`（附件 + web/code/finish；pairwise Elo 不在格子内跑） | HF [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) |
 | `gpqa` | QA | `mc_letter`, `llm_judge` | / |
 | `mmlu-pro` | QA | `mc_letter`, `llm_judge` | / |
 | `arc-challenge` | QA | `mc_letter`, `llm_judge` | / |

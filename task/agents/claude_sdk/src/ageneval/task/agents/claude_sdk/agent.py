@@ -23,12 +23,12 @@ from typing import Any, Mapping, Sequence
 
 from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, ToolCall
 from ageneval.task.core.budget import max_tokens as _budget_tokens
+from ageneval.task.core.native_tools import clean_final_answer, followup_user_prompt, needs_followup_final
 from ageneval.task.core.openai_compat import install_openai_compat
 
 logger = logging.getLogger(__name__)
 
 _MAX_TURNS = 8
-_MAX_TOKENS = _budget_tokens()
 # Unified model: default to .env's A2E_MODEL (a non-reasoning instruct model);
 # fall back to qwen-plus. The endpoint gateway maps the model name.
 _DEFAULT_MODEL = os.environ.get("A2E_MODEL") or "qwen-plus"
@@ -157,7 +157,7 @@ class ClaudeSDKAgent(AgentRunner):
             try:
                 response = await client.messages.create(
                     model=self.model,
-                    max_tokens=_MAX_TOKENS,
+                    max_tokens=_budget_tokens(),
                     system=system_prompt,
                     tools=tools,
                     messages=messages,
@@ -234,6 +234,33 @@ class ClaudeSDKAgent(AgentRunner):
                     }
                 )
             messages.append({"role": "user", "content": tool_results})
+
+        cleaned = clean_final_answer(final_answer or "")
+        if needs_followup_final(cleaned, tool_calls):
+            try:
+                follow = await client.messages.create(
+                    model=self.model,
+                    max_tokens=_budget_tokens(),
+                    system=system_prompt,
+                    messages=messages
+                    + [
+                        {
+                            "role": "user",
+                            "content": followup_user_prompt(
+                                task.instruction, tool_calls
+                            ),
+                        }
+                    ],
+                )
+                text = _text_of(follow.content)
+                parsed = _parse_json(text)
+                if "final_answer" in parsed:
+                    final_answer = str(parsed["final_answer"])
+                else:
+                    final_answer = clean_final_answer(text) or text or final_answer
+                turns += 1
+            except Exception:  # noqa: BLE001
+                pass
 
         elapsed = time.perf_counter() - start
         status = (

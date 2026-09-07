@@ -140,7 +140,7 @@ values at start-up. Precedence: `--max-turns` / `--max-tokens` / `--llm-timeout`
 |---------|-------------|--------------|-------------|-----------------|
 | `tau-bench` / `tau2` / `tau3` | 30 | 4096 | 180s | 1200s / 1100s |
 | `deepsearchqa` | 8 | 4096 | 180s | 720s / 620s |
-| `gdpval-aa` | 8 | 16384 | 600s | 1800s / 1700s |
+| `gdpval-aa` | 250 | 16384 | 600s | 7200s / 7000s |
 
 Set `A2E_MODEL`, `OPENAI_API_KEY`, and `OPENAI_API_BASE` in `.env`. Optional GDPval locals: `A2E_GDPVAL_FILES_DIR`, `A2E_GDPVAL_PARQUET`.
 
@@ -160,7 +160,7 @@ it; use `--list` to inspect every available benchmark, harness, and evaluator.
 | `gsm8k`              | QA      | `numeric_match`, `llm_judge`                             | /       |
 | `humaneval`          | QA      | `humaneval_pass`                                         | /       |
 | `persistbench`       | QA      | `substring`, `llm_judge`                                 | /       |
-| `gdpval-aa`          | QA      | `gdp_grader` (in-run rubric judge; pairwise Elo is off-run) | HF [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) |
+| `gdpval-aa`          | Tool    | `gdp_grader` (files + web/code/finish; Elo off-run) | HF [`openai/gdpval`](https://huggingface.co/datasets/openai/gdpval) |
 | `gpqa`               | QA      | `mc_letter`, `llm_judge`                                 | /       |
 | `mmlu-pro`           | QA      | `mc_letter`, `llm_judge`                                 | /       |
 | `arc-challenge`      | QA      | `mc_letter`, `llm_judge`                                 | /       |

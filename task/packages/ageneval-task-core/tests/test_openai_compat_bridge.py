@@ -7,8 +7,11 @@ from ageneval.task.core.openai_compat import (
     coerce_json_object,
     is_anthropic_messages_url,
     openai_to_anthropic_payload,
+    rewrite_response_format,
+    rewrite_tools_json_schema,
 )
 from ageneval.task.core.native_tools import (
+    canonicalize_tool_args,
     clean_final_answer,
     evidence_from_tool_call,
     is_unusable_final,
@@ -30,6 +33,34 @@ def test_parse_leaked_crewai_react_and_action():
         'Thought: search\nAction: web_search\nAction Input: {"query":"NHS shoulder pain"}'
     )
     assert action == [{"name": "web_search", "arguments": {"query": "NHS shoulder pain"}}]
+
+
+def test_parse_leaked_tau_and_gdp_tool_names():
+    leaked = parse_leaked_tool_calls(
+        'Action: find_user_id_by_name_zip\n'
+        'Action Input: {"first_name":"Yusuf","last_name":"Rossi","zip":"19122"}',
+        allowed_names={"find_user_id_by_name_zip", "get_order_details"},
+    )
+    assert leaked == [
+        {
+            "name": "find_user_id_by_name_zip",
+            "arguments": {
+                "first_name": "Yusuf",
+                "last_name": "Rossi",
+                "zip": "19122",
+            },
+        }
+    ]
+    listed = parse_leaked_tool_calls(
+        'to=list_reference_files code:\n{"path":"."}\n',
+        allowed_names={"list_reference_files", "read_file"},
+    )
+    assert listed[0]["name"] == "list_reference_files"
+    bare = parse_leaked_tool_calls(
+        "Thought: inventory files\nAction: list_reference_files\n",
+        allowed_names={"list_reference_files", "read_file"},
+    )
+    assert bare == [{"name": "list_reference_files", "arguments": {}}]
 
 
 def test_evidence_reads_open_url_and_search_json():
@@ -75,6 +106,52 @@ def test_dsqa_leaked_tool_text_is_unusable():
     )
 
 
+def test_instructor_tool_calling_schema_is_gateway_safe():
+    payload = {
+        "model": "gpt-5.6-sol",
+        "messages": [{"role": "user", "content": "call a tool"}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "InstructorToolCalling",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "tool_name": {"type": "string"},
+                        "arguments": {
+                            "anyOf": [
+                                {"type": "object", "additionalProperties": True},
+                                {"type": "null"},
+                            ]
+                        },
+                    },
+                    "required": ["tool_name", "arguments"],
+                },
+            },
+        },
+    }
+    out = rewrite_response_format(payload)
+    js = out["response_format"]["json_schema"]
+    assert js["strict"] is False
+    obj = js["schema"]["properties"]["arguments"]["anyOf"][0]
+    assert obj["additionalProperties"] is False
+    tools = rewrite_tools_json_schema(
+        {
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "list_reference_files",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+        }
+    )
+    assert tools["tools"][0]["function"]["parameters"]["additionalProperties"] is False
+
+
 def test_coerce_list_of_objects_takes_first():
     assert coerce_json_object(
         [{"product_id": "1656367028"}, {"product_id": "1656367028"}]
@@ -82,6 +159,50 @@ def test_coerce_list_of_objects_takes_first():
     assert coerce_json_object(
         '[{"product_id": "1"}, {"product_id": "2"}]'
     ) == {"product_id": "1"}
+
+
+def test_canonicalize_tau_name_zip_aliases():
+    assert canonicalize_tool_args(
+        "find_user_id_by_name_zip",
+        {"name": "Yara Silva", "zip_code": "77159"},
+    ) == {"first_name": "Yara", "last_name": "Silva", "zip": "77159"}
+    assert canonicalize_tool_args(
+        "find_user_id_by_name_zip",
+        {"full_name": "Yara Silva", "zip_code": "77159"},
+    ) == {"first_name": "Yara", "last_name": "Silva", "zip": "77159"}
+
+
+def test_parse_leaked_leftover_action_json():
+    leftover = (
+        '{"action":"code_exec","arguments":{"code":"d={1:2}; print(d)"}}'
+    )
+    leaked = parse_leaked_tool_calls(
+        leftover, allowed_names={"code_exec", "finish"}
+    )
+    assert leaked[0]["name"] == "code_exec"
+    assert "print(d)" in leaked[0]["arguments"]["code"]
+    assert is_unusable_final(leftover)
+    assert clean_final_answer(leftover) == ""
+    addr = (
+        '{"action":"modify_pending_order_address","arguments":'
+        '{"order_id":"#W3730488","address":{"city":"New York"}}}'
+    )
+    leaked2 = parse_leaked_tool_calls(
+        addr, allowed_names={"modify_pending_order_address"}
+    )
+    assert leaked2[0]["name"] == "modify_pending_order_address"
+    assert leaked2[0]["arguments"]["order_id"] == "#W3730488"
+    messy = 'to=code_exec 代 наңjson\n{"code":"print(3)"}'
+    leaked3 = parse_leaked_tool_calls(messy, allowed_names={"code_exec"})
+    assert leaked3[0]["name"] == "code_exec"
+    assert leaked3[0]["arguments"]["code"] == "print(3)"
+    assert is_unusable_final(messy)
+
+
+def test_unwrap_nested_action_arguments():
+    assert unwrap_tool_kwargs(
+        {"action": "code_exec", "arguments": {"code": "print(1)"}}
+    ) == {"code": "print(1)"}
 
 
 def test_unwrap_list_scalar_and_dict():

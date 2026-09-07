@@ -22,9 +22,24 @@ def test_official_dsqa_and_gdp_settings():
     assert dsqa["max_turns"] == 8
     assert dsqa["grader"] == "deepsearch_grader"
     gdp = resolve_run_settings(DATASETS["gdpval-aa"], env={})
+    assert gdp["max_turns"] == 250
     assert gdp["max_tokens"] == 16384
     assert gdp["llm_timeout"] == 600.0
+    assert gdp["run_deadline"] == 7000.0
     assert gdp["grader"] == "gdp_grader"
+
+
+def test_explicit_empty_env_ignores_process_budget_leaks(monkeypatch):
+    """apply_run_settings from a previous cell must not pin the next dataset."""
+    monkeypatch.setenv("A2E_MAX_TURNS", "30")
+    monkeypatch.setenv("A2E_AGNO_DEADLINE", "900")
+    monkeypatch.setenv("A2E_RUN_DEADLINE", "1100")
+    dsqa = resolve_run_settings(DATASETS["deepsearchqa"], env={})
+    assert dsqa["max_turns"] == 8
+    assert dsqa["run_deadline"] == 620.0
+    gdp = resolve_run_settings(DATASETS["gdpval-aa"], env={})
+    assert gdp["max_turns"] == 250
+    assert gdp["run_deadline"] == 7000.0
 
 
 def test_cli_overrides_env_and_official():

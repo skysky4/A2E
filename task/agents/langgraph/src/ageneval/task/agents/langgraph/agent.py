@@ -16,7 +16,23 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from ageneval.task.core import AgentBinding, AgentRunner, TaskInput, TaskTrace, ToolCall
+from ageneval.task.core import (
+    AgentBinding,
+    AgentRunner,
+    TaskInput,
+    TaskTrace,
+    ToolCall,
+    clean_final_answer,
+    max_tokens as _budget_tokens,
+)
+from ageneval.task.core.native_tools import (
+    canonicalize_tool_args,
+    followup_user_prompt,
+    needs_followup_final,
+    parse_leaked_tool_calls,
+    unwrap_tool_kwargs,
+)
+from ageneval.task.core.openai_compat import install_openai_compat
 
 from ageneval.task.agents.langgraph.graph import build_tau_graph
 
@@ -57,7 +73,11 @@ class LangGraphAgent(AgentRunner):
     async def run(self, task: TaskInput) -> TaskTrace:
         from langchain_openai import ChatOpenAI
 
-        llm_kwargs: dict[str, Any] = {"model": self._model_name}
+        install_openai_compat()
+        llm_kwargs: dict[str, Any] = {
+            "model": self._model_name,
+            "max_tokens": _budget_tokens(),
+        }
         if self.api_base or os.environ.get("OPENAI_API_BASE"):
             llm_kwargs["base_url"] = self.api_base or os.environ["OPENAI_API_BASE"]
         if self.api_key or os.environ.get("OPENAI_API_KEY"):
@@ -90,19 +110,60 @@ class LangGraphAgent(AgentRunner):
             )
         elapsed = time.perf_counter() - start
 
+        raw_tools = list(final_state.get("tool_calls") or [])
+        allowed = {
+            str((schema.get("function") or {}).get("name") or "")
+            for schema in (self.binding.tool_schemas if self.binding else ())
+        }
+        allowed.discard("")
+        leaked = parse_leaked_tool_calls(
+            str(final_state.get("final_answer") or ""),
+            allowed_names=allowed,
+        )
+        for call in leaked:
+            args = canonicalize_tool_args(
+                call["name"], unwrap_tool_kwargs(call.get("arguments") or {})
+            )
+            try:
+                result = self.binding.tool_executor(  # type: ignore[union-attr]
+                    call["name"],
+                    args,
+                    task.initial_state,
+                )
+            except Exception as exc:  # noqa: BLE001
+                result = {"error": str(exc)}
+            raw_tools.append(
+                {
+                    "name": call["name"],
+                    "arguments": args,
+                    "result": result,
+                }
+            )
         tool_calls = tuple(
             ToolCall(
                 name=tc["name"],
                 arguments=tc.get("arguments", {}),
                 result=tc.get("result"),
             )
-            for tc in final_state.get("tool_calls", [])
+            for tc in raw_tools
         )
-        final_answer = final_state.get("final_answer")
-        turns = int(final_state.get("turns", 0))
+        sdk_final = str(final_state.get("final_answer") or "")
+        final_answer = clean_final_answer(sdk_final) or (None if leaked else sdk_final)
+        if needs_followup_final(final_answer or "", tool_calls):
+            follow = followup_user_prompt(task.instruction, tool_calls)
+            try:
+                from langchain_core.messages import HumanMessage
+
+                msg = llm.invoke([HumanMessage(content=follow)])
+                extra = clean_final_answer(getattr(msg, "content", "") or "")
+                if extra:
+                    final_answer = extra
+            except Exception:  # noqa: BLE001
+                pass
+        turns = int(final_state.get("turns", 0)) or len(tool_calls)
         status = (
             "ok"
-            if final_answer is not None
+            if final_answer or tool_calls
             else ("max_turns" if turns >= self.max_turns else "error")
         )
         return TaskTrace(

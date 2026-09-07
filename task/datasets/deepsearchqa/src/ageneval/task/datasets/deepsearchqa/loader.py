@@ -52,6 +52,38 @@ def _to_task(
     )
 
 
+def _import_hf_load_dataset():
+    """Import HuggingFace ``datasets.load_dataset``.
+
+    A2E's tree has a local ``task/datasets/`` package. If the process cwd is
+    ``task/``, ``import datasets`` binds that folder instead of HuggingFace
+    and official DeepSearchQA silently falls back to the tiny vendor sample.
+    """
+    import sys
+
+    cur = sys.modules.get("datasets")
+    path = str(getattr(cur, "__file__", "") or "")
+    if cur is not None and "site-packages" not in path.replace("\\", "/"):
+        for key in list(sys.modules):
+            if key == "datasets" or key.startswith("datasets."):
+                del sys.modules[key]
+
+    saved = list(sys.path)
+    site = [p for p in saved if "site-packages" in p]
+    rest = [
+        p
+        for p in saved
+        if p not in site
+        and os.path.abspath(p) not in {os.path.abspath(os.getcwd()), os.path.abspath(".")}
+    ]
+    sys.path[:] = site + rest
+    try:
+        from datasets import load_dataset
+    finally:
+        sys.path[:] = saved
+    return load_dataset
+
+
 def load_deepsearchqa_tasks(
     *,
     hf_id: str | None = _HF_ID,
@@ -67,7 +99,7 @@ def load_deepsearchqa_tasks(
         return _load_vendor(n=n)
     if hf_id:
         try:
-            from datasets import load_dataset
+            load_dataset = _import_hf_load_dataset()
 
             ds = load_dataset(hf_id, split=split, streaming=False)
             tasks: list[TaskInput] = []
