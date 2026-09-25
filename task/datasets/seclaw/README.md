@@ -1,4 +1,4 @@
-# SPECSYNTH-CLAWBENCH
+# SeClaw
 
 <div align="center">
 
@@ -14,15 +14,15 @@ English | [中文](README_zh.md)
 
 ## A2E placement
 
-This directory contains the standalone SPECSYNTH-CLAWBENCH release. It is not yet registered with the A2E unified runner. Run the commands below from this module directory:
+This directory contains the standalone SeClaw release. It is not yet registered with the A2E unified runner. Run the commands below from this module directory:
 
 ```bash
-cd task/datasets/specsynth_clawbench
+cd task/datasets/seclaw
 ```
 
 ## Overview
 
-SPECSYNTH-CLAWBENCH runs AI agent safety tasks in isolated Docker containers. Each task provides a synthetic OpenClaw workspace, MCP tools, mock services, and a task-specific grader. The public release contains 150 OpenClaw tasks plus a Docker batch runner that produces local, reproducible artifacts for model comparison.
+SeClaw runs AI agent safety tasks in isolated Docker containers. Each task provides a synthetic OpenClaw workspace, MCP tools, mock services, and a task-specific grader. The public release contains 150 OpenClaw tasks plus a Docker batch runner that produces local, reproducible artifacts for model comparison.
 
 The public entry point is `scripts/batch_execute.sh --backend docker`. It runs one local Docker round for every configured model and task, evaluates trajectories, and writes batch-style outputs under `batch_logs/{batch_name}`.
 
@@ -52,7 +52,7 @@ cat batch_logs/docker_eval_v1/scores.json | python -m json.tool
 open batch_logs/docker_eval_v1/report.md
 ```
 
-`uv` is the recommended dependency manager for SPECSYNTH-CLAWBENCH. The batch runner uses `uv run --frozen python` when `uv.lock` is present, so public benchmark runs use the checked-in lockfile instead of resolving dependencies during execution. If `uv` is not available, the lightweight compatibility path remains `python3 -m pip install -r benchmark/requirements.txt`.
+`uv` is the recommended dependency manager for SeClaw. The batch runner uses `uv run --frozen python` when `uv.lock` is present, so public benchmark runs use the checked-in lockfile instead of resolving dependencies during execution. If `uv` is not available, the lightweight compatibility path remains `python3 -m pip install -r benchmark/requirements.txt`.
 
 `docker_models_config.yaml` can contain multiple `models` entries. Each entry can point to a different provider by using its own `model`, `base_url`, and `api_key_env`, with the values supplied from `.env` such as `DOCKER_BACKEND_MODEL_ID`, `DOCKER_BACKEND_BASE_URL`, and `DOCKER_BACKEND_API_KEY`.
 

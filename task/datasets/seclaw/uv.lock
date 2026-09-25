@@ -878,7 +878,7 @@ wheels = [
 ]
 
 [[package]]
-name = "specsynth-clawbench"
+name = "seclaw"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

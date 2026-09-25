@@ -1,6 +1,6 @@
-# Contributing to SPECSYNTH-CLAWBENCH
+# Contributing to SeClaw
 
-Thank you for your interest in contributing to SPECSYNTH-CLAWBENCH, a benchmark for evaluating AI agent safety in synthetic openclaw tasks.
+Thank you for your interest in contributing to SeClaw, a benchmark for evaluating AI agent safety in synthetic openclaw tasks.
 
 ## Getting Started
 
@@ -10,7 +10,7 @@ Thank you for your interest in contributing to SPECSYNTH-CLAWBENCH, a benchmark 
 4. Make your changes.
 5. Submit a pull request.
 
-Run the development commands below from `task/datasets/specsynth_clawbench/`. Target pull requests at `datamllab/A2E:dev-openclaw-audit`.
+Run the development commands below from `task/datasets/seclaw/`. Target pull requests at `datamllab/A2E:dev-openclaw-audit`.
 
 ## Development Setup
 

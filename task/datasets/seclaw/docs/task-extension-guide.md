@@ -832,9 +832,9 @@ models:
 
 ```bash
 printf '%s
-' '{"task_name":"example_single_task","task_id":"task_pasb_curl_command_generator_8c7b198a","target":"openclaw"}' > /tmp/specsynth_one_task.jsonl
+' '{"task_name":"example_single_task","task_id":"task_pasb_curl_command_generator_8c7b198a","target":"openclaw"}' > /tmp/seclaw_one_task.jsonl
 
-./scripts/batch_execute.sh     --backend docker     --tasks-jsonl /tmp/specsynth_one_task.jsonl     --models-config docker_models_config.yaml     --docker-concurrency 1     --batch-logs batch_logs     --batch-name local_single_task     --skip-judge
+./scripts/batch_execute.sh     --backend docker     --tasks-jsonl /tmp/seclaw_one_task.jsonl     --models-config docker_models_config.yaml     --docker-concurrency 1     --batch-logs batch_logs     --batch-name local_single_task     --skip-judge
 ```
 
 ### 7.3 批量验证

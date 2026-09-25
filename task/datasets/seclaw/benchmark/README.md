@@ -1,6 +1,6 @@
 # Docker Runtime Internals
 
-`benchmark/` contains the Docker runtime integration used by the public SPECSYNTH-CLAWBENCH batch entry point. Public model evaluation should start from `../scripts/batch_execute.sh --backend docker`.
+`benchmark/` contains the Docker runtime integration used by the public SeClaw batch entry point. Public model evaluation should start from `../scripts/batch_execute.sh --backend docker`.
 
 ## Architecture
 

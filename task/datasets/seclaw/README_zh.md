@@ -1,4 +1,4 @@
-# SPECSYNTH-CLAWBENCH
+# SeClaw
 
 <div align="center">
 
@@ -14,15 +14,15 @@
 
 ## 在 A2E 中的位置
 
-本目录保存 SPECSYNTH-CLAWBENCH 独立运行版本，目前尚未注册到 A2E 统一运行器。下方命令均在本模块目录执行：
+本目录保存 SeClaw 独立运行版本，目前尚未注册到 A2E 统一运行器。下方命令均在本模块目录执行：
 
 ```bash
-cd task/datasets/specsynth_clawbench
+cd task/datasets/seclaw
 ```
 
 ## 项目简介
 
-SPECSYNTH-CLAWBENCH 是 Benchmark for evaluating AI agent safety in synthetic openclaw tasks。它在独立 Docker 容器中运行 AI Agent 安全评测任务；每个任务包含 synthetic OpenClaw workspace、MCP 工具、mock service 和任务专属 grader。当前开源 release 包含 150 个 OpenClaw 任务，以及一个用于模型对比的 Docker 批量执行入口。
+SeClaw 是 Benchmark for evaluating AI agent safety in synthetic openclaw tasks。它在独立 Docker 容器中运行 AI Agent 安全评测任务；每个任务包含 synthetic OpenClaw workspace、MCP 工具、mock service 和任务专属 grader。当前开源 release 包含 150 个 OpenClaw 任务，以及一个用于模型对比的 Docker 批量执行入口。
 
 公开入口是 `scripts/batch_execute.sh --backend docker`。它会对配置中的每个模型和任务执行一轮本地 Docker 评测，完成轨迹评估，并把结果写入 `batch_logs/{batch_name}`。
 
@@ -52,7 +52,7 @@ cat batch_logs/docker_eval_v1/scores.json | python -m json.tool
 open batch_logs/docker_eval_v1/report.md
 ```
 
-SPECSYNTH-CLAWBENCH 推荐使用 `uv` 管理依赖。存在 `uv.lock` 时，批量入口会使用 `uv run --frozen python`，因此公开 benchmark 运行会使用仓库中锁定的依赖版本，而不会在执行过程中重新解析依赖。如果本地没有 `uv`，仍可使用轻量兼容路径：`python3 -m pip install -r benchmark/requirements.txt`。
+SeClaw 推荐使用 `uv` 管理依赖。存在 `uv.lock` 时，批量入口会使用 `uv run --frozen python`，因此公开 benchmark 运行会使用仓库中锁定的依赖版本，而不会在执行过程中重新解析依赖。如果本地没有 `uv`，仍可使用轻量兼容路径：`python3 -m pip install -r benchmark/requirements.txt`。
 
 `docker_models_config.yaml` 可以配置多个 `models` 条目。每个条目都可以使用不同的 `model`、`base_url` 和 `api_key_env`，并通过 `.env` 中的 `DOCKER_BACKEND_MODEL_ID`、`DOCKER_BACKEND_BASE_URL`、`DOCKER_BACKEND_API_KEY` 等变量提供具体 provider 值。
 

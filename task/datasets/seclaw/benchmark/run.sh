@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Internal SPECSYNTH-CLAWBENCH runtime helper.
+# Internal SeClaw runtime helper.
 # Public evaluations should use ../scripts/batch_execute.sh --backend docker.
 set -euo pipefail
 

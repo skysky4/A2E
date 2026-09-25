@@ -1,4 +1,4 @@
-# SPECSYNTH-CLAWBENCH Docker backend model configuration example
+# SeClaw Docker backend model configuration example
 #
 # Copy this file and fill in .env with the providers you want to evaluate:
 #   cp docker_models_config.example.yaml docker_models_config.yaml

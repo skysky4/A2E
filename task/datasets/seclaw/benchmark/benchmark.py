@@ -14,7 +14,7 @@
 
 """Internal Docker runtime used by the public batch execution wrapper.
 
-The public SPECSYNTH-CLAWBENCH entry point is scripts/batch_execute.sh.
+The public SeClaw entry point is scripts/batch_execute.sh.
 This module owns per-task container execution, fixture deployment, transcript
 collection, and low-level grading plumbing for that wrapper.
 """
@@ -778,7 +778,7 @@ def _write_summary(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "SPECSYNTH-CLAWBENCH internal Docker runtime. "
+            "SeClaw internal Docker runtime. "
             "Use scripts/batch_execute.sh --backend docker for public evaluation runs."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
